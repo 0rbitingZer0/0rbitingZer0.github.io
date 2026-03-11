@@ -1,0 +1,25 @@
+# Build tooling (never public)
+build.py
+template-*.html
+markdown/
+
+# Dev/personal assets
+assets/images/avatar.svg
+assets/fonts/
+snapshots/
+style-preview.html
+logo-preview.html
+github-avatar.html
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
