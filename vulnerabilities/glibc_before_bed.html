@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; font-src 'self';">
+  <title>glibc before bed - 0rbitingZer0</title>
+  <meta name="description" content="two bugs in the GNU C Library DNS resolver.">
+  <meta property="og:title" content="glibc before bed">
+  <meta property="og:description" content="two bugs in the GNU C Library DNS resolver.">
+  <meta property="og:type" content="article">
+  <link rel="icon" href="../assets/images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../assets/css/style.css">
+  <link rel="stylesheet" href="../assets/css/prism-tomorrow.min.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container">
+      <a href="../index.html" class="site-logo">0rbitingZer0</a>
+      <nav class="site-nav">
+        <a href="../notes/index.html">notes</a>
+        <a href="../vulnerabilities/index.html" class="active">vulns</a>
+        <a href="../about.html">about</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="container">
+      <a href="index.html" class="back-link">disclosures</a>
+      <div class="article-header">
+        <h1>glibc before bed</h1>
+        <p class="meta" style="font-style: italic; margin-top: 0.3rem;">two bugs in the GNU C Library DNS resolver.</p>
+        <div class="meta">2026-03-22</div>
+      </div>
+
+      <div class="vuln-details">
+        <dl>
+          <dt>CVE ID</dt><dd>CVE-2026-4437, CVE-2026-4438</dd>
+          
+          
+          <dt>Vendor</dt><dd>GNU C Library</dd>
+          <dt>Product</dt><dd>glibc</dd>
+          <dt>Versions</dt><dd>2.34 – 2.43</dd>
+          
+          
+          
+        </dl>
+      </div>
+
+      
+
+      <div class="article-content">
+        <p>I’ve been spending some of my nights digging into embedded Linux systems recently, which naturally led me to explore the core libraries these devices rely on. One name kept coming up: glibc, the default C runtime on most Linux distributions. I wasn’t entirely sure where to start, but since I’d spent a few months the previous year playing around with networking, the DNS resolver felt like a good entry point.
+To understand how this actually works under the hood, I started tracing how DNS responses are parsed inside glibc. </p>
+
+<p><code>resolv/nss_dns/dns-host.c</code> is what turns raw DNS packets into the hostnames and addresses an application gets back when it calls <code>gethostbyname()</code>, <code>gethostbyaddr()</code>, or <code>getaddrinfo()</code>. Three main functions handle this parsing:</p>
+
+<p><img src="../assets/images/glibc-dns-host-functions.png" alt="Three main DNS response parsing functions in dns-host.c"></p>
+
+<p>All three use the same underlying mechanism: an abstraction called <code>ns_rr_cursor</code>, introduced in 2022 as part of a refactor. Understanding how the cursor works is key to both bugs, so it's worth taking a closer look.</p>
+
+<p>A DNS response is divided into four sections: Question, Answer, Authority, and Additional. The header specifies how many records are in each (ANCOUNT, NSCOUNT, ARCOUNT), but on the wire the records are simply packed one after another, with no explicit markers between sections. The cursor doesn’t know where one section ends and the next begins, it just walks forward.</p>
+
+<p><code>ns_rr_cursor_init</code> sets up the cursor at the first resource record after the question:</p>
+
+<p><img src="../assets/images/glibc-ns-rr-cursor-init.png" alt="ns_rr_cursor_init source code"></p>
+
+<p>And <code>ns_rr_cursor_next</code> advances to the next record, regardless of what section it belongs to:</p>
+
+<pre><code>// resolv/ns_rr_cursor_next.c (simplified)
+bool
+__ns_rr_cursor_next (struct ns_rr_cursor *c, struct ns_rr_wire *rr)
+{
+  /* Extract the record owner name.  */
+  int consumed = __ns_name_unpack (c-&gt;begin, c-&gt;end, c-&gt;current,
+                                   rr-&gt;rname, sizeof (rr-&gt;rname));
+  c-&gt;current += consumed;
+  // ...
+  rr-&gt;rdata = c-&gt;current;
+  c-&gt;current += rr-&gt;rdlength;
+  return true;
+}
+</code></pre>
+
+<p>This means it’s entirely up to the caller to track ancount and stop once the answer section has been processed. If it doesn’t, the cursor continues into the authority and additional sections, where the records may contain arbitrary data.</p>
+
+<h2 id="cve-2026-4437-hostname-spoofing-via-unchecked-dns-sections">CVE-2026-4437 — hostname spoofing via unchecked DNS sections</h2>
+
+<p>Two of the three functions get this right. Here's <code>getanswer_r</code>, which handles forward DNS (A/AAAA records):</p>
+
+<p><img src="../assets/images/glibc-getanswer-r-loop.png" alt="getanswer_r loop with proper ancount decrement"></p>
+
+<p><code>for (; ancount &gt; 0; --ancount)</code>. At each iteration it decrements, stopping after processing all answer records. Same pattern in <code>gaih_getanswer_slice</code> at line 932:</p>
+
+<pre><code>for (; ancount &gt; -0; --ancount)
+</code></pre>
+
+<p>(That <code>-0</code> confused me. It's what's in the actual source. Turns out <code>-0</code> equals <code>0</code> in C integer arithmetic, so it behaves the same.)</p>
+
+<p>Now this is <code>getanswer_ptr</code>, which handles reverse DNS (PTR records):</p>
+
+<p><img src="../assets/images/glibc-getanswer-ptr-loop.png" alt="getanswer_ptr loop with missing ancount decrement"></p>
+
+<p><code>while (ancount &gt; 0)</code>. No decrement. <code>ancount</code> starts at whatever the DNS header specifies (typically 1) and never changes. The loop processes the answer section, then keeps walking into the authority and additional sections. It effectively treats every record in the packet as if it were part of the answer.</p>
+
+<p>Before the 2022 refactor, the old code managed cursor advancement manually, and the loop decrement was part of that bookkeeping. When the <code>ns_rr_cursor</code> API took over record-by-record advancement, it separated cursor movement from section counting. <code>getanswer_r</code> and <code>gaih_getanswer_slice</code> both retained the <code>--ancount</code> in their loop headers, but <code>getanswer_ptr</code> switched from a for loop to a while loop and the decrement didn’t come with it.</p>
+
+<p>To exploit this, assume you control a DNS server, or you’re positioned somewhere along the resolution path between the application and its resolver. DNS over UDP provides no authentication, so an attacker on the same network segment can forge responses.</p>
+
+<p>Now, imagine an application calls <code>gethostbyaddr("10.0.0.1")</code>. Your server responds with:</p>
+
+<pre><code>DNS Response:
+  Header:    ANCOUNT=1, NSCOUNT=1
+  Answer:    1x TXT record (not a PTR, skipped, but ancount stays 1)
+  Authority: 1x PTR record → "evil.spoofed.example.com"
+</code></pre>
+
+<p>The answer section contains a single TXT record. The loop checks <code>rr.rtype</code> and only processes <code>T_PTR</code> or <code>T_CNAME</code>, so the TXT record is ignored. But <code>ancount</code> is never decremented - it remains 1, so the loop continues past the answer section into the authority section.</p>
+
+<p>There, it encounters a PTR record with the expected owner name and processes it as if it were part of the answer. I was able to verify this with a PoC:</p>
+
+<p><img src="../assets/images/glibc-spoofing-poc.png" alt="PoC terminal output showing hostname spoofing"></p>
+
+<p>The top half shows a normal PTR response returning the legitimate hostname. The bottom half shows the crafted response, with a TXT record in the answer section and a forged PTR record in the authority section.</p>
+
+<h2 id="cve-2026-4438-metacharacter-injection-via-reverse-dns">CVE-2026-4438 — metacharacter injection via reverse DNS</h2>
+
+<p>Still in <code>getanswer_ptr</code>, just a few lines down from the first bug. This is the block that handles the PTR record once it's matched:</p>
+
+<p><img src="../assets/images/glibc-ptr-validation-bug.png" alt="PTR validation checking wrong variable"></p>
+
+<p>Line 867: <code>__ns_name_unpack</code> decompresses the PTR target from the DNS response into <code>name_buffer</code>. Then at line 869, <code>__res_binary_hnok</code> validates... <code>expected_name</code>.</p>
+
+<p><code>expected_name</code> is initialized at line 819 to the query name via <code>ns_rr_cursor_qname(&amp;c)</code>, something like <code>1.0.0.10.in-addr.arpa</code>, which is always valid. The actual untrusted data is in <code>name_buffer</code>. The validation is on the wrong variable.</p>
+
+<p><code>__res_binary_hnok</code> checks that every label in a DNS name contains only <code>[0-9a-zA-Z_-]</code>. If it were called on <code>name_buffer</code>, it would reject metacharacters. But called on the query name, it passes every time. The same rewrite that dropped the <code>ancount</code> decrement also wired this validation to the wrong variable. </p>
+
+<p>There is an edge case: if a CNAME precedes the PTR, the CNAME branch at line 853 aliases <code>expected_name</code> to <code>name_buffer</code>, so the hnok check would catch it. But standard PTR responses don't include CNAMEs, so in practice the check validates nothing useful.</p>
+
+<p>Without that check, the only thing standing between the attacker and the application is <code>__ns_name_ntop</code>, which converts the binary name to text with some escaping:</p>
+
+<p><img src="../assets/images/glibc-ns-name-ntop-special.png" alt="ns_name_ntop special() function showing incomplete character escaping"></p>
+
+<p>But <code>ns_name_ntop</code> is a general-purpose DNS name printer, it covers quotes, semicolons, backslashes, parentheses, <code>@</code>, and <code>$</code>. Not backtick, pipe, or ampersand. Those pass through raw. To prove it, all you need is a structurally normal response with a crafted PTR target:</p>
+
+<p><img src="../assets/images/glibc-injection-poc.png" alt="PoC terminal output showing metacharacter injection"></p>
+
+<p>No sanitization, no rejection. Backtick and pipe go through completely unescaped. So if any application does something like:</p>
+
+<pre><code>sprintf(cmd, "logger connection-from-%s", h-&gt;h_name);
+system(cmd);
+</code></pre>
+
+<p>that's command injection via reverse DNS.</p>
+
+<h2 id="impact">Impact</h2>
+
+<p>Both bugs were introduced by the August 2022 ns_rr_cursor rewrite and are present in glibc 2.34 through 2.43. The rewrite landed on master first and was backported to the 2.34, 2.35, and 2.36 stable branches before shipping in the 2.37 release.</p>
+
+<p>Both require control over the DNS response (e.g. a malicious server, a MitM position, or cache poisoning). The first bug allows an attacker to spoof the hostname returned by reverse lookups by feeding records from sections the code was never meant to process. The second allows shell metacharacters to be injected into the returned hostname because validation is applied to the wrong variable.</p>
+
+<p>The latter is the more dangerous of the two: any application that passes the returned hostname to a shell becomes vulnerable to command injection.</p>
+
+<p>The most realistic targets are embedded and IoT devices running glibc - environments where DNS is often unauthenticated, networks are less trusted, and application code tends to handle strings more loosely. Which is partly what led me down this path in the first place.</p>
+
+<p>Till next time 🚀</p>
+
+<h2 id="timeline">Timeline</h2>
+
+<table>
+<thead>
+<tr>
+  <th>Date</th>
+  <th>Event</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>2026-03-08</td>
+  <td>Reported to <code>glibc-cna@sourceware.org</code></td>
+</tr>
+<tr>
+  <td>2026-03-09</td>
+  <td>Issues confirmed by RedHat</td>
+</tr>
+<tr>
+  <td>2026-03-19</td>
+  <td><a href="https://www.cve.org/CVERecord?id=CVE-2026-4437" rel="noopener noreferrer">CVE-2026-4437</a>, <a href="https://www.cve.org/CVERecord?id=CVE-2026-4438" rel="noopener noreferrer">CVE-2026-4438</a> assigned</td>
+</tr>
+<tr>
+  <td>2026-03-20</td>
+  <td>Public disclosure / fix</td>
+</tr>
+</tbody>
+</table>
+
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <span class="footer-text">&copy; 2026 0rbitingZer0</span>
+      <div class="footer-links">
+        <a href="https://github.com/0rbitingZer0" target="_blank" rel="noopener">github</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="../assets/js/prism.min.js"></script>
+  <script src="../assets/js/prism-python.min.js"></script>
+  <script src="../assets/js/prism-bash.min.js"></script>
+  <script src="../assets/js/prism-javascript.min.js"></script>
+  <script src="../assets/js/prism-json.min.js"></script>
+  <script src="../assets/js/prism-c.min.js"></script>
+</body>
+</html>
