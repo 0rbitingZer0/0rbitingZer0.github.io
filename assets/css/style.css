@@ -604,6 +604,15 @@ main {
 }
 
 @media (max-width: 640px) {
+  .site-header .container {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .site-nav a {
+    font-size: 0.82rem;
+  }
+
   .hero h1 {
     font-size: 1.6rem;
   }
@@ -615,6 +624,22 @@ main {
 
   .article-header h1 {
     font-size: 1.3rem;
+  }
+
+  .article-content p,
+  .article-content ul,
+  .article-content ol {
+    text-align: left;
+  }
+
+  .article-content table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .article-content pre {
+    font-size: 0.8em;
   }
 
   .post-list a {
