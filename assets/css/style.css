@@ -624,6 +624,26 @@ main {
 
   .article-header h1 {
     font-size: 1.3rem;
+    overflow-wrap: break-word;
+  }
+
+  .post-sub,
+  .article-content h2,
+  .vuln-details dd {
+    overflow-wrap: break-word;
+    word-break: keep-all;
+  }
+
+  .post-list a {
+    padding: 0.5rem 0;
+  }
+
+  .post-list li {
+    padding: 0.2rem 0;
+  }
+
+  .site-nav a {
+    padding: 0.35rem 0.1rem;
   }
 
   .article-content p,
@@ -640,6 +660,7 @@ main {
 
   .article-content pre {
     font-size: 0.8em;
+    scrollbar-width: thin;
   }
 
   .post-list a {
