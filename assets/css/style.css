@@ -466,6 +466,8 @@ main {
   font-family: var(--font-code);
   font-size: 0.85em;
   color: var(--accent-alt);
+  vertical-align: baseline;
+  line-height: inherit;
 }
 
 .article-content pre {
