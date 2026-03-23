@@ -433,6 +433,8 @@ main {
   font-size: 1.05rem;
   line-height: 1.75;
   text-align: justify;
+  font-variant-numeric: lining-nums;
+  font-feature-settings: "lnum" 1;
 }
 
 .article-content ul,
@@ -444,6 +446,8 @@ main {
   font-weight: 400;
   font-size: 1.05rem;
   line-height: 1.75;
+  font-variant-numeric: lining-nums;
+  font-feature-settings: "lnum" 1;
 }
 
 .article-content li {
