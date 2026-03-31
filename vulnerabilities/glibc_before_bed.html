@@ -69,20 +69,22 @@ To understand how this actually works under the hood, I started tracing how DNS 
 
 <p>And <code>ns_rr_cursor_next</code> advances to the next record, regardless of what section it belongs to:</p>
 
-<pre><code>// resolv/ns_rr_cursor_next.c (simplified)
-bool
-__ns_rr_cursor_next (struct ns_rr_cursor *c, struct ns_rr_wire *rr)
-{
-  /* Extract the record owner name.  */
-  int consumed = __ns_name_unpack (c-&gt;begin, c-&gt;end, c-&gt;current,
-                                   rr-&gt;rname, sizeof (rr-&gt;rname));
-  c-&gt;current += consumed;
-  // ...
-  rr-&gt;rdata = c-&gt;current;
-  c-&gt;current += rr-&gt;rdlength;
-  return true;
-}
+<div>
+<pre><span></span><code><span class="c1">// resolv/ns_rr_cursor_next.c (simplified)</span>
+<span class="kt">bool</span>
+<span class="nf">__ns_rr_cursor_next</span><span class="w"> </span><span class="p">(</span><span class="k">struct</span><span class="w"> </span><span class="nc">ns_rr_cursor</span><span class="w"> </span><span class="o">*</span><span class="n">c</span><span class="p">,</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">ns_rr_wire</span><span class="w"> </span><span class="o">*</span><span class="n">rr</span><span class="p">)</span>
+<span class="p">{</span>
+<span class="w">  </span><span class="cm">/* Extract the record owner name.  */</span>
+<span class="w">  </span><span class="kt">int</span><span class="w"> </span><span class="n">consumed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">__ns_name_unpack</span><span class="w"> </span><span class="p">(</span><span class="n">c</span><span class="o">-&gt;</span><span class="n">begin</span><span class="p">,</span><span class="w"> </span><span class="n">c</span><span class="o">-&gt;</span><span class="n">end</span><span class="p">,</span><span class="w"> </span><span class="n">c</span><span class="o">-&gt;</span><span class="n">current</span><span class="p">,</span>
+<span class="w">                                   </span><span class="n">rr</span><span class="o">-&gt;</span><span class="n">rname</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="w"> </span><span class="p">(</span><span class="n">rr</span><span class="o">-&gt;</span><span class="n">rname</span><span class="p">));</span>
+<span class="w">  </span><span class="n">c</span><span class="o">-&gt;</span><span class="n">current</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">consumed</span><span class="p">;</span>
+<span class="w">  </span><span class="c1">// ...</span>
+<span class="w">  </span><span class="n">rr</span><span class="o">-&gt;</span><span class="n">rdata</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">c</span><span class="o">-&gt;</span><span class="n">current</span><span class="p">;</span>
+<span class="w">  </span><span class="n">c</span><span class="o">-&gt;</span><span class="n">current</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">rr</span><span class="o">-&gt;</span><span class="n">rdlength</span><span class="p">;</span>
+<span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="nb">true</span><span class="p">;</span>
+<span class="p">}</span>
 </code></pre>
+</div>
 
 <p>This means it’s entirely up to the caller to track ancount and stop once the answer section has been processed. If it doesn’t, the cursor continues into the authority and additional sections, where the records may contain arbitrary data.</p>
 
@@ -94,8 +96,10 @@ __ns_rr_cursor_next (struct ns_rr_cursor *c, struct ns_rr_wire *rr)
 
 <p><code>for (; ancount &gt; 0; --ancount)</code>. At each iteration it decrements, stopping after processing all answer records. Same pattern in <code>gaih_getanswer_slice</code> at line 932:</p>
 
-<pre><code>for (; ancount &gt; -0; --ancount)
+<div>
+<pre><span></span><code><span class="k">for</span><span class="w"> </span><span class="p">(;</span><span class="w"> </span><span class="n">ancount</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">-0</span><span class="p">;</span><span class="w"> </span><span class="o">--</span><span class="n">ancount</span><span class="p">)</span>
 </code></pre>
+</div>
 
 <p>(That <code>-0</code> confused me. It's what's in the actual source. Turns out <code>-0</code> equals <code>0</code> in C integer arithmetic, so it behaves the same.)</p>
 
@@ -149,9 +153,11 @@ __ns_rr_cursor_next (struct ns_rr_cursor *c, struct ns_rr_wire *rr)
 
 <p>No sanitization, no rejection. Backtick and pipe go through completely unescaped. So if any application does something like:</p>
 
-<pre><code>sprintf(cmd, "logger connection-from-%s", h-&gt;h_name);
-system(cmd);
+<div>
+<pre><span></span><code><span class="n">sprintf</span><span class="p">(</span><span class="n">cmd</span><span class="p">,</span><span class="w"> </span><span class="s">"logger connection-from-%s"</span><span class="p">,</span><span class="w"> </span><span class="n">h</span><span class="o">-&gt;</span><span class="n">h_name</span><span class="p">);</span>
+<span class="n">system</span><span class="p">(</span><span class="n">cmd</span><span class="p">);</span>
 </code></pre>
+</div>
 
 <p>that's command injection via reverse DNS.</p>
 

@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; font-src 'self';">
+  <title>tell me YI - 0rbitingZer0</title>
+  <meta name="description" content="some vulnerabilities in YI Home Camera 2">
+  <meta property="og:title" content="tell me YI">
+  <meta property="og:description" content="some vulnerabilities in YI Home Camera 2">
+  <meta property="og:type" content="article">
+  <link rel="icon" href="../assets/images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../assets/css/style.css">
+  <link rel="stylesheet" href="../assets/css/prism-tomorrow.min.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container">
+      <a href="../index.html" class="site-logo">0rbitingZer0</a>
+      <nav class="site-nav">
+        <a href="../notes/index.html">notes</a>
+        <a href="../vulnerabilities/index.html" class="active">vulns</a>
+        <a href="../about.html">about</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="container">
+      <a href="index.html" class="back-link">disclosures</a>
+      <div class="article-header">
+        <h1>tell me YI</h1>
+        <p class="meta" style="font-style: italic; margin-top: 0.3rem;">some vulnerabilities in YI Home Camera 2</p>
+        <div class="meta">2026-03-31</div>
+      </div>
+
+      <div class="vuln-details">
+        <dl>
+          <dt>CVE ID</dt><dd>CVE-2026-4475, CVE-2026-4476, CVE-2026-4477, CVE-2026-4478</dd>
+          
+          
+          <dt>Vendor</dt><dd>YI Technology / Kami</dd>
+          <dt>Product</dt><dd>YI Home Camera 2</dd>
+          <dt>Versions</dt><dd>2.1.1_20171024151200</dd>
+          
+          
+          
+        </dl>
+      </div>
+
+      
+
+      <div class="article-content">
+        <p>Cheap indoor cameras are everywhere. They’re also chronically under-researched. Vendors in this space tend to move fast, build on shared reference designs, and ship firmware that nobody ever audits.</p>
+
+<p>YI Technology is a good example. Founded in 2014 as part of Xiaomi’s ecosystem, they <a href="https://www.diyphotography.net/yi-ceo-splitting-off-xiaomi-not-afraid-crappy-counterfeits-china-will-get-bigger/" rel="noopener noreferrer">split off independently in October 2016</a> and launched Kami as a smart home sub-brand in 2018, which is increasingly what the company goes by. Their <a href="https://www2.yitechnology.com/yi-1080p-home-camera-2" rel="noopener noreferrer">YI Home Camera 2</a> is a 1080p indoor camera from 2016, still sold by third-party sellers, with no prior CVEs against this specific model. Cisco Talos <a href="https://blog.talosintelligence.com/vulnerability-spotlight-yi-technology/" rel="noopener noreferrer">published research on the Yi Home Camera 27US in 2018</a>, but that is a different product on a different chipset. Community firmware projects exist for other YI cameras (<a href="https://github.com/roleoroleo/yi-hack-MStar" rel="noopener noreferrer">MStar</a>, <a href="https://github.com/TheCrypt0/yi-hack-v4" rel="noopener noreferrer">Hi3518e</a>, <a href="https://github.com/roleoroleo/yi-hack-Allwinner-v2" rel="noopener noreferrer">Allwinner</a>) but none target the Ambarella S2LM chipset in this model.</p>
+
+<p>Looking around, I saw they publish some firmware directly. No account, no encryption, just a download link. That’s a good starting point for anyone who wants to look.</p>
+
+<p><img src="../assets/images/yi-firmware-page.png" alt="yi-firmware-page.png"></p>
+
+<p>The file I pulled was <code>2.1.1_20171024151200home</code>, the only version listed on the <a href="https://www2.yitechnology.com/firmware/index" rel="noopener noreferrer">YI firmware page</a> for this model, dated October 2017. YI cameras also receive updates via the app (OTA), but no newer builds are published on the firmware page, so there is no way to independently verify whether later versions exist, what they contain, or whether they address any of the issues described here, without physical access to a device.</p>
+
+<p>A reasonable objection is that some or all of these issues may have been addressed in OTA builds since 2017. That’s possible, though all four are design-level flaws rather than implementation bugs. Addressing them would require architectural changes. Also, YI/Kami did not respond to disclosure. Without public firmware, any other similar CVE disclosure, or a vendor response, there is no way to confirm a fix.</p>
+
+<p>First thing I did was run <code>binwalk</code> on it:</p>
+
+<p><img src="../assets/images/yi-binwalk.png" alt="yi-binwalk.png"></p>
+
+<p>The image ships as a raw UBI filesystem. I carved and mounted it, getting a standard embedded Linux filesystem.</p>
+
+<p><img src="../assets/images/yi-filesystem.png" alt="yi-filesystem.png"></p>
+
+<p>Before opening any disassembler, I used <code>strings</code>, <code>grep</code>, and <code>find</code> to get a quick sense of what was interesting:</p>
+
+<p><img src="../assets/images/yi-initial-recon.png" alt="yi-initial-recon.png"></p>
+
+<p>That first pass already turned up some good starting points: shell scripts mentioning hardcoded WPA passphrases and an interesting binary called <code>ipc</code> sitting in <code>home/web/</code>.</p>
+
+<p>Since <code>ipc</code> lived in the web directory, I ran <code>strings</code> on it and grepped through the output:</p>
+
+<p><img src="../assets/images/yi-strings-urls.png" alt="yi-strings-urls.png"></p>
+
+<p><img src="../assets/images/yi-strings-hmac-patterns.png" alt="yi-strings-hmac-patterns.png"></p>
+
+<p>Plaintext API URLs, HTTP firmware download paths, HMAC query patterns, and a hardcoded string sitting right next to them. The CGI endpoints were in there too:</p>
+
+<p><img src="../assets/images/yi-cgi-endpoints.png" alt="yi-cgi-endpoints.png"></p>
+
+<p>Based on this, <code>ipc</code> appears to be the main workhorse: HTTP server, cloud communication, firmware updates, all in one place.</p>
+
+<p>I checked its security properties with <code>checksec</code>:</p>
+
+<p><img src="../assets/images/yi-checksec.png" alt="yi-checksec.png"></p>
+
+<p>Every standard exploit mitigation is absent (no stack canaries, NX, PIE, or RELRO). The other binaries on the device (<code>rtsp_server</code>, <code>upgrade_tool</code>, <code>miio_client</code>, <code>mosquitto</code>, etc.) have the same profile.</p>
+
+<p>I loaded <code>ipc</code> into Ghidra and started cross-referencing the strings I had flagged.</p>
+
+<h2 id="cve-2026-4475-hardcoded-hmac-sha1-signing-key">CVE-2026-4475: hardcoded HMAC-SHA1 signing key</h2>
+
+<p>I started by searching for cross-references to the suspicious hardcoded string in Ghidra. Every xref pointed to call sites where it was passed as the third argument to the same function: <code>FUN_001adaf4</code>. Here’s what that function looks like:</p>
+
+<p><img src="../assets/images/yi-ghidra-hmac-function.png" alt="yi-ghidra-hmac-function.png"></p>
+
+<p>Line 14: <code>FUN_001ad210(param_3, sVar1, param_1, sVar2, auStack_98)</code>. That’s where the actual signing happens. I followed <code>FUN_001ad210</code> into its definition:</p>
+
+<div>
+<pre><span></span><code><span class="n">FUN_001ad210</span><span class="p">(</span><span class="n">byte</span><span class="w"> </span><span class="o">*</span><span class="n">param_1</span><span class="p">,</span><span class="w"> </span><span class="n">uint</span><span class="w"> </span><span class="n">param_2</span><span class="p">,</span>
+<span class="w">             </span><span class="n">undefined4</span><span class="w"> </span><span class="n">param_3</span><span class="p">,</span><span class="w"> </span><span class="n">undefined4</span><span class="w"> </span><span class="n">param_4</span><span class="p">,</span><span class="w"> </span><span class="n">undefined4</span><span class="w"> </span><span class="n">param_5</span><span class="p">)</span>
+<span class="p">{</span>
+<span class="w">  </span><span class="c1">// ...</span>
+<span class="w">  </span><span class="n">local_168</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mh">0x67452301</span><span class="p">;</span>
+<span class="w">  </span><span class="n">local_164</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mh">0xefcdab89</span><span class="p">;</span>
+<span class="w">  </span><span class="n">local_160</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mh">0x98badcfe</span><span class="p">;</span>
+<span class="w">  </span><span class="n">local_15c</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mh">0x10325476</span><span class="p">;</span>
+<span class="w">  </span><span class="n">local_158</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mh">0xc3d2e1f0</span><span class="p">;</span>
+<span class="w">  </span><span class="c1">// ...</span>
+<span class="w">  </span><span class="n">memset</span><span class="p">(</span><span class="n">local_1a8</span><span class="p">,</span><span class="w"> </span><span class="mh">0x36</span><span class="p">,</span><span class="w"> </span><span class="mh">0x40</span><span class="p">);</span><span class="w">   </span><span class="c1">// ipad (0x36 × 64)</span>
+<span class="w">  </span><span class="c1">// ...</span>
+<span class="w">  </span><span class="n">FUN_001acfa8</span><span class="p">(</span><span class="n">param_3</span><span class="p">,</span><span class="w"> </span><span class="n">param_4</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">local_168</span><span class="p">);</span><span class="w">  </span><span class="c1">// SHA-1 update with message</span>
+<span class="w">  </span><span class="n">FUN_001acf04</span><span class="p">(</span><span class="o">&amp;</span><span class="n">local_168</span><span class="p">,</span><span class="w"> </span><span class="n">auStack_1bc</span><span class="p">);</span><span class="w">       </span><span class="c1">// SHA-1 final → inner hash</span>
+<span class="w">  </span><span class="c1">// ...</span>
+<span class="w">  </span><span class="n">memset</span><span class="p">(</span><span class="n">local_1a8</span><span class="p">,</span><span class="w"> </span><span class="mh">0x5c</span><span class="p">,</span><span class="w"> </span><span class="mh">0x40</span><span class="p">);</span><span class="w">   </span><span class="c1">// opad (0x5c × 64)</span>
+<span class="w">  </span><span class="c1">// ...</span>
+<span class="w">  </span><span class="n">FUN_001acfa8</span><span class="p">(</span><span class="n">auStack_1bc</span><span class="p">,</span><span class="w"> </span><span class="mh">0x14</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">local_c8</span><span class="p">);</span><span class="w">  </span><span class="c1">// SHA-1 update - inner hash</span>
+<span class="w">  </span><span class="n">FUN_001acf04</span><span class="p">(</span><span class="o">&amp;</span><span class="n">local_c8</span><span class="p">,</span><span class="w"> </span><span class="n">param_5</span><span class="p">);</span><span class="w">             </span><span class="c1">// SHA-1 final</span>
+<span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre>
+</div>
+
+<p>This is a custom HMAC-SHA1 implementation (not using the OpenSSL HMAC API). You can tell from two things in the code:</p>
+
+<ol>
+<li>The five constants (<code>0x67452301</code>, <code>0xefcdab89</code>, <code>0x98badcfe</code>, <code>0x10325476</code>, <code>0xc3d2e1f0</code>) are the SHA-1 initialization values, defined in the <a href="https://datatracker.ietf.org/doc/html/rfc3174#section-6.1" rel="noopener noreferrer">SHA-1 spec</a>.</li>
+<li>The two <code>memset</code> calls with <code>0x36</code> and <code>0x5c</code> are the HMAC inner and outer padding constants, defined in <a href="https://datatracker.ietf.org/doc/html/rfc2104#section-2" rel="noopener noreferrer">RFC 2104</a>.</li>
+</ol>
+
+<p>In HMAC, the key is XORed with the inner pad to produce the inner key block, and with the outer pad to produce the outer key block. In this function, that key is <code>param_1</code>. Looking back at the caller (<code>FUN_001adaf4</code>), <code>param_1</code> here is <code>param_3</code> from there: the hardcoded string. Here’s one of the four call sites confirming it:</p>
+
+<p><img src="../assets/images/yi-ghidra-callsite.png" alt="yi-ghidra-callsite.png"></p>
+
+<p>Same pattern at all four call sites. Same key, every device, every request. I checked every cross-reference to <code>FUN_001adaf4</code>: Heartbeat (<code>0x65718</code>), registration (<code>0x66a4e</code>), check-in (<code>0x670ae</code>), log upload (<code>0x6d8bc</code>). Every function that makes an outbound API call goes through this signing step.</p>
+
+<p>In the analysed firmware, every API request is signed with the same hardcoded key. The key is in the binary. The signing format is in the binary.</p>
+
+<p>Out of 12 HMAC-signed endpoints I found in the binary, only 2 (the heartbeat and online check-in) include the video password and MAC address. The other 10 require the key, the device UID, and varying combinations of timestamps, but not the password or MAC. The UID may be discoverable on the local network via the unauthenticated <code>getdeviceinfo.cgi</code> endpoint (CVE-2026-4476).</p>
+
+<h2 id="cve-2026-4478-unsigned-firmware-updates-over-http">CVE-2026-4478: unsigned firmware updates over HTTP</h2>
+
+<p>Back in the <code>strings</code> output from <code>ipc</code>, I had also flagged the firmware download URLs. All plain HTTP, no TLS:</p>
+
+<pre><code>http://download.xiaoyi.com/yifirmware/smarthomecam/
+http://download.eu.xiaoyi.com/yifirmware/smarthomecam/
+http://download.us.xiaoyi.com/yifirmware/smarthomecam/
+http://download.xiaoyi.com.tw/smarthomecam/
+</code></pre>
+
+<p>Searching <code>ipc</code>’s strings for what happens after the download, I found the command that invokes the flashing tool:</p>
+
+<p><img src="../assets/images/yi-strings-upgrade-tool.png" alt="yi-strings-upgrade-tool.png"></p>
+
+<p>Firmware updates are normally cryptographically signed: the vendor signs the image with a private key, and the device verifies the signature before accepting it. I searched <code>upgrade_tool</code>’s strings for any reference to cryptographic verification:</p>
+
+<pre><code>$ strings usr/local/bin/upgrade_tool | grep -iE "sign|rsa|ecdsa|sha256|verify|certif"
+</code></pre>
+
+<p>Nothing. No signing, no verification, no certificates. The only validation it performs is a magic number check (does the file start with the expected header?) and CRC32 checksums (is the data intact?). Neither is a security measure.</p>
+
+<p><img src="../assets/images/yi-strings-magic-crc.png" alt="yi-strings-magic-crc.png"></p>
+
+<p>A magic number is just a few bytes at the start of the file that identify the format. CRC32 detects accidental corruption, not tampering. Anyone can compute a valid CRC32 for arbitrary data.</p>
+
+<pre><code>$ hexdump -C 2.1.1_20171024151200home | head -2
+00000000  41 4e 54 53 49 4d 47 00  a0 4e 02 00 10 c9 33 01  |ANTSIMG..N....3.|
+</code></pre>
+
+<p>The attack requires a man-in-the-middle position between the camera and the download server at the moment it fetches firmware. The strings <code>app_curl_get_upgrade_info</code> and <code>need_upgrade</code> in the binary suggest the camera checks for updates on its own, which would make this a periodic window rather than a one-shot triggered by the user. On a local network, the MitM can be achieved via ARP poisoning. Since the update is fetched over plain HTTP, DNS hijacking also works and doesn’t require being on the same LAN.</p>
+
+<p>If the MitM succeeds, the attacker serves a crafted image with the correct magic number and valid CRC32s for each segment. The camera flashes it. <code>upgrade_tool</code> writes directly to NAND flash via MTD devices. From static analysis I found no indication of a read-only recovery mechanism that could restore clean firmware. If that holds, the compromise is persistent.</p>
+
+<p>I tested the download URLs at time of writing. The EU and US servers (<code>download.eu.xiaoyi.com</code>, <code>download.us.xiaoyi.com</code>) still serve the full 32MB firmware image over plain HTTP.</p>
+
+<h2 id="cve-2026-4476-and-cve-2026-4477-unauthenticated-endpoints-and-hardcoded-wifi-credentials">CVE-2026-4476 and CVE-2026-4477: unauthenticated endpoints and hardcoded WiFi credentials</h2>
+
+<p>Two other lower-severity issues:</p>
+
+<p><code>ipc</code> runs an embedded HTTP server on the LAN. It exposes several CGI endpoints. In Ghidra, I followed the endpoint strings to the dispatch logic at <code>FUN_000a0de4</code>:</p>
+
+<div>
+<pre><span></span><code><span class="kt">int</span><span class="w"> </span><span class="nf">FUN_000a0de4</span><span class="p">(</span><span class="kt">char</span><span class="w"> </span><span class="o">*</span><span class="n">param_1</span><span class="p">)</span>
+<span class="p">{</span>
+<span class="w">  </span><span class="kt">int</span><span class="w"> </span><span class="n">local_c</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">  </span><span class="k">while</span><span class="w"> </span><span class="p">(</span><span class="n">local_c</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">100</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">((</span><span class="o">&amp;</span><span class="n">PTR_s_getdeviceinfo</span><span class="p">.</span><span class="n">cgi_00448bbc</span><span class="p">)[</span><span class="n">local_c</span><span class="p">]</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="nb">NULL</span><span class="p">)</span><span class="w"> </span><span class="k">break</span><span class="p">;</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">strstr</span><span class="p">(</span><span class="n">param_1</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="o">&amp;</span><span class="n">PTR_s_getdeviceinfo</span><span class="p">.</span><span class="n">cgi_00448bbc</span><span class="p">)[</span><span class="n">local_c</span><span class="p">])</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="nb">NULL</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="k">return</span><span class="w"> </span><span class="n">local_c</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="n">local_c</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">local_c</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="mi">-1</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre>
+</div>
+
+<p>The function uses <code>strstr()</code> instead of <code>strcmp()</code> to match endpoint names. That means substring matching: a request to <code>/anything/powerctrl.cgi/anything</code> would still match <code>powerctrl.cgi</code> and get routed to its handler.</p>
+
+<p>I decompiled every handler in the dispatch table. None of them check any form of authentication. The HTTP server library they built on supports auth (I saw <code>WWW-Authenticate: Basic realm=</code> and <code>Authorization required</code> in the binary’s strings), but it’s never called. The endpoints are just open.</p>
+
+<p>The one that stood out is <code>bind_success_xm.cgi</code>. In the Xiaomi ecosystem, “binding” apparently means linking a device to a user’s cloud account. Here’s what the handler does:</p>
+
+<div>
+<pre><span></span><code><span class="c1">// FUN_000a1a24 — bind_success_xm.cgi handler</span>
+<span class="n">snprintf</span><span class="p">(</span><span class="n">local_14</span><span class="p">,</span><span class="w"> </span><span class="p">...,</span><span class="w"> </span><span class="err">“</span><span class="n">HTTP</span><span class="o">/</span><span class="mf">1.0</span><span class="w"> </span><span class="mi">200</span><span class="w"> </span><span class="n">OK</span><span class="err">\</span><span class="n">r</span><span class="err">\</span><span class="n">n</span><span class="err">\</span><span class="n">r</span><span class="err">\</span><span class="n">n</span><span class="p">{</span><span class="n">start</span><span class="o">:</span><span class="err">\”\”</span><span class="p">,</span><span class="err">”</span><span class="p">);</span>
+<span class="n">iVar1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">FUN_000a0f04</span><span class="p">(</span><span class="n">param_1</span><span class="p">,</span><span class="w"> </span><span class="n">param_2</span><span class="p">,</span><span class="w"> </span><span class="n">param_3</span><span class="p">,</span><span class="w"> </span><span class="n">param_4</span><span class="p">,</span><span class="w"> </span><span class="n">auStack_604</span><span class="p">,</span><span class="w"> </span><span class="mh">0x5ec</span><span class="p">);</span>
+<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">iVar1</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="c1">// log “cgi_receive_info fail”</span>
+<span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="o">*</span><span class="p">(</span><span class="n">undefined4</span><span class="w"> </span><span class="o">*</span><span class="p">)(</span><span class="n">DAT_00c88e18</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mh">0xbc</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">  </span><span class="o">*</span><span class="p">(</span><span class="n">undefined4</span><span class="w"> </span><span class="o">*</span><span class="p">)(</span><span class="n">DAT_00c88e18</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mh">0xc0</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">  </span><span class="c1">// log “do_cgi_bind_success”</span>
+<span class="p">}</span>
+<span class="n">snprintf</span><span class="p">(</span><span class="n">local_14</span><span class="p">,</span><span class="w"> </span><span class="p">...,</span><span class="w"> </span><span class="err">“</span><span class="n">end</span><span class="o">:</span><span class="err">\”\”</span><span class="p">}</span><span class="err">”</span><span class="p">);</span>
+</code></pre>
+</div>
+
+<p>Send HTTP 200, read the request body, set two flags, log success. No token, no challenge, no check on who is asking. Whether calling this endpoint alone is sufficient to claim a device I cannot determine from static analysis alone, but the firmware side has no access control on any endpoint.</p>
+
+<p>Separately, when the camera enters AP mode during initial setup or factory reset, the WiFi credentials are hardcoded in the shell scripts:</p>
+
+<p><img src="../assets/images/yi-grep-wps-pin.png" alt="yi-grep-wps-pin.png"></p>
+
+<p><code>12345670</code>. In <code>hostap.sh</code>, this value is used as both the WPS PIN and the WPA passphrase. In <code>wifi_setup.sh</code>, it sets the WPS PIN. No per-device randomization. The attack window is narrow: only during initial setup or after a factory reset.</p>
+
+<h2 id="impact">Impact</h2>
+
+<p>Everything here is from static analysis. I did not test on a live device or against the live cloud API.</p>
+
+<p>The hardcoded HMAC key (CVE-2026-4475, CVSS 8.7) means every YI Home Camera 2 authenticates to the cloud with the same shared secret. HMAC is supposed to prove a request came from a legitimate device; since every device uses the same key, that proof is effectively broken. An attacker with the key and a target device’s UID can construct validly signed requests for 10 of the 12 HMAC-signed endpoints in the binary. The cryptographic layer is broken by design.</p>
+
+<p>The unsigned firmware path (CVE-2026-4478, CVSS 9.2) has the most severe potential consequences. The firmware download servers are still live and serving over plain HTTP. A successful MitM could deliver persistent root access to a device with a camera and microphone inside someone’s home. Since firmware is written directly to NAND with no signature check, a crafted image that boots correctly would survive reboots.</p>
+
+<p>The vendor did not respond to disclosure. No patched firmware has been published on their download page. Whether OTA builds have addressed any of these issues is not verifiable without physical access to a device. Based on what is publicly available, these flaws remain present and unaddressed.</p>
+
+<p>Till next time 🚀</p>
+
+<h2 id="timeline">Timeline</h2>
+
+<table>
+<thead>
+<tr>
+  <th>Date</th>
+  <th>Event</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>2026‑03‑05</td>
+  <td>Attempted contact via support@kamivision.com, the only available contact address. YI Technology lists no dedicated security contact or PSIRT.</td>
+</tr>
+<tr>
+  <td>2026‑03‑19</td>
+  <td><a href="https://www.cve.org/CVERecord?id=CVE-2026-4475" rel="noopener noreferrer">CVE-2026-4475</a>, <a href="https://www.cve.org/CVERecord?id=CVE-2026-4476" rel="noopener noreferrer">CVE-2026-4476</a>, <a href="https://www.cve.org/CVERecord?id=CVE-2026-4477" rel="noopener noreferrer">CVE-2026-4477</a>, <a href="https://www.cve.org/CVERecord?id=CVE-2026-4478" rel="noopener noreferrer">CVE-2026-4478</a> assigned. No vendor response.</td>
+</tr>
+<tr>
+  <td>2026‑03‑31</td>
+  <td>Public disclosure.</td>
+</tr>
+</tbody>
+</table>
+
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <span class="footer-text">&copy; 2026 0rbitingZer0</span>
+      <div class="footer-links">
+        <a href="https://github.com/0rbitingZer0" target="_blank" rel="noopener">github</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="../assets/js/prism.min.js"></script>
+  <script src="../assets/js/prism-python.min.js"></script>
+  <script src="../assets/js/prism-bash.min.js"></script>
+  <script src="../assets/js/prism-javascript.min.js"></script>
+  <script src="../assets/js/prism-json.min.js"></script>
+  <script src="../assets/js/prism-c.min.js"></script>
+</body>
+</html>

@@ -1,7 +1,4 @@
-# 0rbiting Zer0 - Security Contact
-# https://securitytxt.org/ | RFC 9116
-
+# 0rbiting Zer0
 Contact: mailto:265538834+0rbitingZer0@users.noreply.github.com
-Expires: 2027-03-07T00:00:00.000Z
 Preferred-Languages: en
 Canonical: https://0rbitingZer0.github.io/0rbiting-zer0/security.txt
