@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; font-src 'self';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; font-src 'self'; media-src 'self';">
   <title>tell me YI - 0rbitingZer0</title>
   <meta name="description" content="some vulnerabilities in YI Home Camera 2">
   <meta property="og:title" content="tell me YI">
@@ -106,30 +106,28 @@
 
 <p>Line 14: <code>FUN_001ad210(param_3, sVar1, param_1, sVar2, auStack_98)</code>. That’s where the actual signing happens. I followed <code>FUN_001ad210</code> into its definition:</p>
 
-<div>
-<pre><span></span><code><span class="n">FUN_001ad210</span><span class="p">(</span><span class="n">byte</span><span class="w"> </span><span class="o">*</span><span class="n">param_1</span><span class="p">,</span><span class="w"> </span><span class="n">uint</span><span class="w"> </span><span class="n">param_2</span><span class="p">,</span>
-<span class="w">             </span><span class="n">undefined4</span><span class="w"> </span><span class="n">param_3</span><span class="p">,</span><span class="w"> </span><span class="n">undefined4</span><span class="w"> </span><span class="n">param_4</span><span class="p">,</span><span class="w"> </span><span class="n">undefined4</span><span class="w"> </span><span class="n">param_5</span><span class="p">)</span>
-<span class="p">{</span>
-<span class="w">  </span><span class="c1">// ...</span>
-<span class="w">  </span><span class="n">local_168</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mh">0x67452301</span><span class="p">;</span>
-<span class="w">  </span><span class="n">local_164</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mh">0xefcdab89</span><span class="p">;</span>
-<span class="w">  </span><span class="n">local_160</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mh">0x98badcfe</span><span class="p">;</span>
-<span class="w">  </span><span class="n">local_15c</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mh">0x10325476</span><span class="p">;</span>
-<span class="w">  </span><span class="n">local_158</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mh">0xc3d2e1f0</span><span class="p">;</span>
-<span class="w">  </span><span class="c1">// ...</span>
-<span class="w">  </span><span class="n">memset</span><span class="p">(</span><span class="n">local_1a8</span><span class="p">,</span><span class="w"> </span><span class="mh">0x36</span><span class="p">,</span><span class="w"> </span><span class="mh">0x40</span><span class="p">);</span><span class="w">   </span><span class="c1">// ipad (0x36 × 64)</span>
-<span class="w">  </span><span class="c1">// ...</span>
-<span class="w">  </span><span class="n">FUN_001acfa8</span><span class="p">(</span><span class="n">param_3</span><span class="p">,</span><span class="w"> </span><span class="n">param_4</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">local_168</span><span class="p">);</span><span class="w">  </span><span class="c1">// SHA-1 update with message</span>
-<span class="w">  </span><span class="n">FUN_001acf04</span><span class="p">(</span><span class="o">&amp;</span><span class="n">local_168</span><span class="p">,</span><span class="w"> </span><span class="n">auStack_1bc</span><span class="p">);</span><span class="w">       </span><span class="c1">// SHA-1 final → inner hash</span>
-<span class="w">  </span><span class="c1">// ...</span>
-<span class="w">  </span><span class="n">memset</span><span class="p">(</span><span class="n">local_1a8</span><span class="p">,</span><span class="w"> </span><span class="mh">0x5c</span><span class="p">,</span><span class="w"> </span><span class="mh">0x40</span><span class="p">);</span><span class="w">   </span><span class="c1">// opad (0x5c × 64)</span>
-<span class="w">  </span><span class="c1">// ...</span>
-<span class="w">  </span><span class="n">FUN_001acfa8</span><span class="p">(</span><span class="n">auStack_1bc</span><span class="p">,</span><span class="w"> </span><span class="mh">0x14</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">local_c8</span><span class="p">);</span><span class="w">  </span><span class="c1">// SHA-1 update - inner hash</span>
-<span class="w">  </span><span class="n">FUN_001acf04</span><span class="p">(</span><span class="o">&amp;</span><span class="n">local_c8</span><span class="p">,</span><span class="w"> </span><span class="n">param_5</span><span class="p">);</span><span class="w">             </span><span class="c1">// SHA-1 final</span>
-<span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
-<span class="p">}</span>
+<pre><code class="language-c">FUN_001ad210(byte *param_1, uint param_2,
+             undefined4 param_3, undefined4 param_4, undefined4 param_5)
+{
+  // ...
+  local_168 = 0x67452301;
+  local_164 = 0xefcdab89;
+  local_160 = 0x98badcfe;
+  local_15c = 0x10325476;
+  local_158 = 0xc3d2e1f0;
+  // ...
+  memset(local_1a8, 0x36, 0x40);   // ipad (0x36 × 64)
+  // ...
+  FUN_001acfa8(param_3, param_4, &amp;local_168);  // SHA-1 update with message
+  FUN_001acf04(&amp;local_168, auStack_1bc);       // SHA-1 final → inner hash
+  // ...
+  memset(local_1a8, 0x5c, 0x40);   // opad (0x5c × 64)
+  // ...
+  FUN_001acfa8(auStack_1bc, 0x14, &amp;local_c8);  // SHA-1 update - inner hash
+  FUN_001acf04(&amp;local_c8, param_5);             // SHA-1 final
+  return 0;
+}
 </code></pre>
-</div>
 
 <p>This is a custom HMAC-SHA1 implementation (not using the OpenSSL HMAC API). You can tell from two things in the code:</p>
 
@@ -152,7 +150,7 @@
 
 <p>Back in the <code>strings</code> output from <code>ipc</code>, I had also flagged the firmware download URLs. All plain HTTP, no TLS:</p>
 
-<pre><code>http://download.xiaoyi.com/yifirmware/smarthomecam/
+<pre><code class="language-text">http://download.xiaoyi.com/yifirmware/smarthomecam/
 http://download.eu.xiaoyi.com/yifirmware/smarthomecam/
 http://download.us.xiaoyi.com/yifirmware/smarthomecam/
 http://download.xiaoyi.com.tw/smarthomecam/
@@ -164,7 +162,7 @@ http://download.xiaoyi.com.tw/smarthomecam/
 
 <p>Firmware updates are normally cryptographically signed: the vendor signs the image with a private key, and the device verifies the signature before accepting it. I searched <code>upgrade_tool</code>’s strings for any reference to cryptographic verification:</p>
 
-<pre><code>$ strings usr/local/bin/upgrade_tool | grep -iE "sign|rsa|ecdsa|sha256|verify|certif"
+<pre><code class="language-bash">$ strings usr/local/bin/upgrade_tool | grep -iE "sign|rsa|ecdsa|sha256|verify|certif"
 </code></pre>
 
 <p>Nothing. No signing, no verification, no certificates. The only validation it performs is a magic number check (does the file start with the expected header?) and CRC32 checksums (is the data intact?). Neither is a security measure.</p>
@@ -173,7 +171,7 @@ http://download.xiaoyi.com.tw/smarthomecam/
 
 <p>A magic number is just a few bytes at the start of the file that identify the format. CRC32 detects accidental corruption, not tampering. Anyone can compute a valid CRC32 for arbitrary data.</p>
 
-<pre><code>$ hexdump -C 2.1.1_20171024151200home | head -2
+<pre><code class="language-bash">$ hexdump -C 2.1.1_20171024151200home | head -2
 00000000  41 4e 54 53 49 4d 47 00  a0 4e 02 00 10 c9 33 01  |ANTSIMG..N....3.|
 </code></pre>
 
@@ -189,21 +187,19 @@ http://download.xiaoyi.com.tw/smarthomecam/
 
 <p><code>ipc</code> runs an embedded HTTP server on the LAN. It exposes several CGI endpoints. In Ghidra, I followed the endpoint strings to the dispatch logic at <code>FUN_000a0de4</code>:</p>
 
-<div>
-<pre><span></span><code><span class="kt">int</span><span class="w"> </span><span class="nf">FUN_000a0de4</span><span class="p">(</span><span class="kt">char</span><span class="w"> </span><span class="o">*</span><span class="n">param_1</span><span class="p">)</span>
-<span class="p">{</span>
-<span class="w">  </span><span class="kt">int</span><span class="w"> </span><span class="n">local_c</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
-<span class="w">  </span><span class="k">while</span><span class="w"> </span><span class="p">(</span><span class="n">local_c</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">100</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">((</span><span class="o">&amp;</span><span class="n">PTR_s_getdeviceinfo</span><span class="p">.</span><span class="n">cgi_00448bbc</span><span class="p">)[</span><span class="n">local_c</span><span class="p">]</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="nb">NULL</span><span class="p">)</span><span class="w"> </span><span class="k">break</span><span class="p">;</span>
-<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">strstr</span><span class="p">(</span><span class="n">param_1</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="o">&amp;</span><span class="n">PTR_s_getdeviceinfo</span><span class="p">.</span><span class="n">cgi_00448bbc</span><span class="p">)[</span><span class="n">local_c</span><span class="p">])</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="nb">NULL</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">      </span><span class="k">return</span><span class="w"> </span><span class="n">local_c</span><span class="p">;</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="w">    </span><span class="n">local_c</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">local_c</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
-<span class="w">  </span><span class="p">}</span>
-<span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="mi">-1</span><span class="p">;</span>
-<span class="p">}</span>
+<pre><code class="language-c">int FUN_000a0de4(char *param_1)
+{
+  int local_c = 0;
+  while (local_c &lt; 100) {
+    if ((&amp;PTR_s_getdeviceinfo.cgi_00448bbc)[local_c] == NULL) break;
+    if (strstr(param_1, (&amp;PTR_s_getdeviceinfo.cgi_00448bbc)[local_c]) != NULL) {
+      return local_c;
+    }
+    local_c = local_c + 1;
+  }
+  return -1;
+}
 </code></pre>
-</div>
 
 <p>The function uses <code>strstr()</code> instead of <code>strcmp()</code> to match endpoint names. That means substring matching: a request to <code>/anything/powerctrl.cgi/anything</code> would still match <code>powerctrl.cgi</code> and get routed to its handler.</p>
 
@@ -211,20 +207,18 @@ http://download.xiaoyi.com.tw/smarthomecam/
 
 <p>The one that stood out is <code>bind_success_xm.cgi</code>. In the Xiaomi ecosystem, “binding” apparently means linking a device to a user’s cloud account. Here’s what the handler does:</p>
 
-<div>
-<pre><span></span><code><span class="c1">// FUN_000a1a24 — bind_success_xm.cgi handler</span>
-<span class="n">snprintf</span><span class="p">(</span><span class="n">local_14</span><span class="p">,</span><span class="w"> </span><span class="p">...,</span><span class="w"> </span><span class="err">“</span><span class="n">HTTP</span><span class="o">/</span><span class="mf">1.0</span><span class="w"> </span><span class="mi">200</span><span class="w"> </span><span class="n">OK</span><span class="err">\</span><span class="n">r</span><span class="err">\</span><span class="n">n</span><span class="err">\</span><span class="n">r</span><span class="err">\</span><span class="n">n</span><span class="p">{</span><span class="n">start</span><span class="o">:</span><span class="err">\”\”</span><span class="p">,</span><span class="err">”</span><span class="p">);</span>
-<span class="n">iVar1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">FUN_000a0f04</span><span class="p">(</span><span class="n">param_1</span><span class="p">,</span><span class="w"> </span><span class="n">param_2</span><span class="p">,</span><span class="w"> </span><span class="n">param_3</span><span class="p">,</span><span class="w"> </span><span class="n">param_4</span><span class="p">,</span><span class="w"> </span><span class="n">auStack_604</span><span class="p">,</span><span class="w"> </span><span class="mh">0x5ec</span><span class="p">);</span>
-<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">iVar1</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="c1">// log “cgi_receive_info fail”</span>
-<span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="o">*</span><span class="p">(</span><span class="n">undefined4</span><span class="w"> </span><span class="o">*</span><span class="p">)(</span><span class="n">DAT_00c88e18</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mh">0xbc</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
-<span class="w">  </span><span class="o">*</span><span class="p">(</span><span class="n">undefined4</span><span class="w"> </span><span class="o">*</span><span class="p">)(</span><span class="n">DAT_00c88e18</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mh">0xc0</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
-<span class="w">  </span><span class="c1">// log “do_cgi_bind_success”</span>
-<span class="p">}</span>
-<span class="n">snprintf</span><span class="p">(</span><span class="n">local_14</span><span class="p">,</span><span class="w"> </span><span class="p">...,</span><span class="w"> </span><span class="err">“</span><span class="n">end</span><span class="o">:</span><span class="err">\”\”</span><span class="p">}</span><span class="err">”</span><span class="p">);</span>
+<pre><code class="language-c">// FUN_000a1a24 — bind_success_xm.cgi handler
+snprintf(local_14, ..., “HTTP/1.0 200 OK\r\n\r\n{start:\”\”,”);
+iVar1 = FUN_000a0f04(param_1, param_2, param_3, param_4, auStack_604, 0x5ec);
+if (iVar1 &lt; 0) {
+  // log “cgi_receive_info fail”
+} else {
+  *(undefined4 *)(DAT_00c88e18 + 0xbc) = 1;
+  *(undefined4 *)(DAT_00c88e18 + 0xc0) = 1;
+  // log “do_cgi_bind_success”
+}
+snprintf(local_14, ..., “end:\”\”}”);
 </code></pre>
-</div>
 
 <p>Send HTTP 200, read the request body, set two flags, log success. No token, no challenge, no check on who is asking. Whether calling this endpoint alone is sufficient to claim a device I cannot determine from static analysis alone, but the firmware side has no access control on any endpoint.</p>
 
