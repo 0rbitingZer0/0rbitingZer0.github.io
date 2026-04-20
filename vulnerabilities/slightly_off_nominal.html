@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; font-src 'self'; media-src 'self';">
+  <title>slightly off nominal - 0rbitingZer0</title>
+  <meta name="description" content="four vulnerabilities in NASA&#x27;s core Flight System.">
+  <meta property="og:title" content="slightly off nominal">
+  <meta property="og:description" content="four vulnerabilities in NASA&#x27;s core Flight System.">
+  <meta property="og:type" content="article">
+  <link rel="icon" href="../assets/images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../assets/css/style.css">
+  <link rel="stylesheet" href="../assets/css/prism-tomorrow.min.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container">
+      <a href="../index.html" class="site-logo">0rbitingZer0</a>
+      <nav class="site-nav">
+        <a href="../notes/index.html">notes</a>
+        <a href="../vulnerabilities/index.html" class="active">vulns</a>
+        <a href="../about.html">about</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="container">
+      <a href="index.html" class="back-link">disclosures</a>
+      <div class="article-header">
+        <h1>slightly off nominal</h1>
+        <p class="meta" style="font-style: italic; margin-top: 0.3rem;">four vulnerabilities in NASA&#x27;s core Flight System.</p>
+        <div class="meta">2026-04-21</div>
+      </div>
+
+      <div class="vuln-details">
+        <dl>
+          <dt>CVE ID</dt><dd>CVE-2026-5473, CVE-2026-5474, CVE-2026-5475, CVE-2026-5476</dd>
+          
+          
+          <dt>Vendor</dt><dd>NASA</dd>
+          <dt>Product</dt><dd>core Flight System (cFS)</dd>
+          <dt>Versions</dt><dd>v7.0.0</dd>
+          
+          
+          
+        </dl>
+      </div>
+
+      
+
+      <div class="article-content">
+        <p>Space tech has always fascinated me, especially the low-level side of how spacecraft communicate. I wanted to learn more. So a few weeks ago, I decided to build a small simulator to explore how telemetry moves between a spacecraft in orbit and the ground, and how the protocols fit together.</p>
+
+<p>Question: where do you start?</p>
+
+<p>NASA's <a href="https://etd.gsfc.nasa.gov/capabilities/core-flight-system/" rel="noopener noreferrer">core Flight System</a>, built at Goddard Space Flight Center (GSFC), is the <a href="https://github.com/nasa/cFS" rel="noopener noreferrer">open source</a> framework that has powered more than forty of their missions, from the two missions that started it (<a href="https://science.nasa.gov/mission/lro/" rel="noopener noreferrer">LRO</a> and <a href="https://sdo.gsfc.nasa.gov/" rel="noopener noreferrer">SDO</a>) to more recent science missions like <a href="https://science.nasa.gov/mission/parker-solar-probe/" rel="noopener noreferrer">Parker Solar Probe</a>. The <a href="https://science.nasa.gov/mission/roman-space-telescope/" rel="noopener noreferrer">Roman Space Telescope</a> and the <a href="https://www.nasa.gov/mission/gateway/" rel="noopener noreferrer">Lunar Gateway</a> are coming up next. Before cFS existed, every mission built its flight software more or less from scratch, stitched together from heritage code. cFS changed that. One reusable framework, layered so engineers can build mission-specific applications on top. It handles messaging between applications, manages configuration tables, provides time services, logs events, and abstracts away the underlying hardware and real-time OS.</p>
+
+<p><img src="../assets/images/cFS_homepage_snap.png" alt="cFS homepage at NASA GSFC"></p>
+
+<p>So I tried to wire everything together: a small cFS Docker build running the default cFE services, five mission apps (ACS, EPS, thermal, comms, nav), a ground station talking CCSDS over UDP (via CI_LAB and TO_LAB for I/O), and a mission control dashboard where I can send commands and watch telemetry stream back from the Software Bus.</p>
+
+<p>Before we get into that, it helps to walk through how the framework is put together. Trust me.</p>
+
+<h2 id="the-cfs-101">The cFS: 101</h2>
+
+<p><img src="../assets/images/cfs_architecture.png" alt="cFS four-layer architecture"></p>
+
+<p>cFS has four layers. At the bottom, the <strong>Platform Support Package</strong> (PSP) wraps the hardware. It handles memory mapping, watchdog timers, reset logic, and boot. Above it sits the <strong>OS Abstraction Layer</strong> (OSAL), which exposes the underlying RTOS: tasks, queues, files, sockets, timers. Together these two hide the platform specifics, so the higher layers run the same on VxWorks, RTEMS, or Linux.</p>
+
+<p>Above OSAL sits the <strong>core Flight Executive</strong> (cFE). It provides the shared services every application depends on: a <strong>Software Bus</strong> for message routing, Executive Services for app lifecycle, Event Services for event logging with severity filtering, and Time Services. <strong>Table services</strong> handle runtime configuration. That's how flight software gets reconfigured without redeploying code (things like sensor thresholds).</p>
+
+<p>On top of all that, <strong>applications</strong> plug in. They handle command ingestion, telemetry output, and any mission-specific functionality. cFS ships with three default "lab" apps that fill the generic roles out of the box: CI_LAB for command ingest, TO_LAB for telemetry output, and SCH_LAB for scheduling. Mission teams add their own apps alongside these on the same bus: navigation, electrical power (EPS), attitude control (ACS), comms, and thermal.</p>
+
+<p>What's left is the ground side. A <strong>ground system</strong> sends commands to the flight software over UDP. Real missions use all sorts of tools here: COSMOS, ITOS, ASIST. The cFS repo ships a reference implementation called cFS-GS, a Python/Qt GUI, but that's one option among many. CI_LAB receives the UDP packets and puts them on the Software Bus. TO_LAB does the reverse: it reads messages from the SB and sends them over UDP to the ground station. Lastly, every cFS command has a MsgID (its routing key on the Software Bus) and a function code (FC, which picks the operation within the app). For example, <code>CFE_TBL_LOAD_CC</code> is MsgID <code>0x1804</code> with FC=2. MsgID lives in the primary header; FC lives in the secondary header that follows, on command packets.</p>
+
+<p>The Software Bus is the main character here. Every cFS application communicates by publishing and subscribing to messages on the bus. No direct function calls between applications. 
+Each message is wrapped in <strong>CCSDS</strong> space packet headers.</p>
+
+<p><img src="../assets/images/ccsds.png" alt="CCSDS primary header layout"></p>
+
+<p>The primary header is 6 bytes across three 16-bit words: Stream ID, Sequence Control, and Data Length. The <strong>Length</strong> field is the one that matters here. It's 2 bytes, encoding total packet size minus 7: 6 for the primary header, and 1 more because CCSDS encodes Length as (data-field-octets − 1). cFS trusts that number everywhere: memcpy sizes, sendto lengths, buffer allocations. Nothing along the way double-checks it.</p>
+
+<p>In mission operations, the command path runs like this:</p>
+
+<p>operator workstation <span class="arrow">→</span> ground system GUI <span class="arrow">→</span> CCSDS encoder <span class="arrow">→</span> uplink <span class="arrow">→</span> spacecraft antenna <span class="arrow">→</span> CI_LAB <span class="arrow">→</span> Software Bus <span class="arrow">→</span> apps.</p>
+
+<h2 id="the-lab">The Lab</h2>
+
+<p>The UI is organised into four panels.</p>
+
+<p><img src="../assets/images/vector_zero_overview.png" alt="VECTOR ZER0 dashboard overview"></p>
+
+<p><span class="panel-num"><strong>[1]</strong></span> Orbital view: a spacecraft in a low Earth orbit, a ground station in London, and comm beams that go dark when the antenna stows or the signal drops. The spacecraft also tumbles when the Attitude Control System (ACS) loses control of its orientation.</p>
+
+<p><span class="panel-num"><strong>[2]</strong></span> Main instrument cluster: eight cells (altitude, velocity, orbit phase, period, battery, solar input, fuel and signal strength) and below them a grid showing each running cFS component (ES, EVS, SB, TBL, TIME, TO and CI) and the five mission apps (NAV, EPS, ACS, COMMS and THERM).</p>
+
+<p><span class="panel-num"><strong>[3]</strong></span> Raw telemetry downlink. The upper half is a live housekeeping decoder: every housekeeping packet that comes off the Software Bus gets parsed and displayed field by field. The lower half is the packet stream itself: MsgID, sequence number, length, and a hex dump with the CCSDS primary headers and payload.</p>
+
+<p><span class="panel-num"><strong>[4]</strong></span> Dictionary and terminal: every cFE, mission, and lab command, with function codes and payload sizes. Next to it, a terminal shows command packets going out and telemetry responses coming back.</p>
+
+<p>From the terminal you can send raw CCSDS commands or fire high-level actions (burns, attitude slews, panel retracts and antenna stows). Every command goes out as a real UDP packet to CI_LAB, and the flight software's telemetry and EVS events stream back onto the dashboard live. A MISSION banner at the top flips CRITICAL or DEGRADED when the spacecraft state crosses operational limits.</p>
+
+<p>Note that the idea was to build a telemetry tool. Housekeeping packets from cFS flight applications drive the altitude, fuel, and orbit readouts. The only physics in the loop is the velocity tracks altitude through <a href="https://www.thespacetechie.com/vis-viva-equation/" rel="noopener noreferrer">vis-viva</a> and burns consume fuel per delta-v. Beyond that, the spacecraft state isn't a physics simulation. The goal is only to show what an exploit does to the telemetry you see.</p>
+
+<p>Once it was up and running, with commands flowing and telemetry streaming back, I started reading, analysing and injecting through the cFS source to understand what was happening to the packets.</p>
+
+<h2 id="ccsds-header-size-trusted-from-sb-to-ground">CCSDS header size trusted from SB to ground</h2>
+
+<p>The first place I looked was the Software Bus, since every message has to pass through it. <code>CFE_SB_TransmitMsg</code> (<code>cfe_sb_api.c:1472</code>) is the centre of gravity: everything published on the bus runs through it.</p>
+
+<pre><code class="language-c">CFE_Status_t CFE_SB_TransmitMsg(const CFE_MSG_Message_t *MsgPtr, bool IsOrigination)
+</code></pre>
+
+<p>A message pointer and an origination flag, no source buffer size. The function has no way to know how large the caller's buffer is, so the only size it can use is the one baked into the message: the CCSDS Length field. From there I traced through what the function does with each message.</p>
+
+<h3 id="cve-2026-5475-cfe_sb_transmitmsg-memory-corruption">CVE-2026-5475: CFE_SB_TransmitMsg memory corruption</h3>
+
+<p>The first thing it does, at <code>cfe_sb_api.c:1484</code>, is to hand off to <code>CFE_SB_TransmitTxn_SetupFromMsg</code> to extract the message size. That function calls <code>CFE_MSG_GetSize</code> and stores the result via <code>CFE_SB_MessageTxn_SetContentSize</code>:</p>
+
+<pre><code class="language-c">Status = CFE_MSG_GetSize(MsgPtr, &amp;MsgSize);
+if (Status == CFE_SUCCESS)
+{
+    CFE_SB_MessageTxn_SetContentSize(TxnPtr, MsgSize);
+}
+</code></pre>
+
+<p><code>CFE_MSG_GetSize</code> reads the two Length bytes from the CCSDS primary header and adds 7 (<code>CFE_MSG_SIZE_OFFSET</code>):</p>
+
+<pre><code class="language-c">*Size = (MsgPtr-&gt;CCSDS.Pri.Length[0] &lt;&lt; 8) + MsgPtr-&gt;CCSDS.Pri.Length[1] + CFE_MSG_SIZE_OFFSET;
+</code></pre>
+
+<p>It does this with no validation or bounds check. Whatever the CCSDS header claims becomes the transaction's content size.</p>
+
+<p>Back in <code>CFE_SB_TransmitMsg</code>, at <code>cfe_sb_api.c:1491</code>, it allocates a new SB buffer at exactly that size. The size comes from <code>CFE_SB_MessageTxn_GetContentSize</code>:</p>
+
+<pre><code class="language-c">BufPtr = CFE_SB_AllocateMessageBuffer(CFE_SB_MessageTxn_GetContentSize(Txn));
+</code></pre>
+
+<p>The destination was sized to match the claim. Then at <code>cfe_sb_api.c:1513</code>, still inside <code>CFE_SB_TransmitMsg</code>, the copy fires:</p>
+
+<pre><code class="language-c">memcpy(&amp;BufPtr-&gt;Msg, MsgPtr, CFE_SB_MessageTxn_GetContentSize(Txn));
+</code></pre>
+
+<p>The source is the caller's actual buffer, and nothing checks that the two match. If the Length field says 1024 bytes but the caller's struct is 32, the memcpy reads 992 bytes past the caller's buffer and copies them into the SB buffer. Every subscriber of that message ID then gets a pointer to that buffer and reads it using the same CCSDS-derived size.</p>
+
+<p>On flat-memory RTOS deployments there are no hardware boundaries between applications. Adjacent memory belongs to whoever the allocator put there last. The SB does cap each message at 32KB, but that's still far larger than any real struct.</p>
+
+<p>A small PoC confirms it. Allocate 32 bytes, set the CCSDS header to claim 512, and the memcpy reads 480 bytes of adjacent heap into the SB buffer. XPL_LAB, a custom exploit app on the bus (see video below), does the same thing inside the running cFS with a 20-byte struct. ASan catches the over-read:</p>
+
+<p><img src="../assets/images/sb_overread_impact_poc_output.png" alt="SB over-read PoC output"></p>
+
+<p>So the SB buffer now contains leaked memory. Where does that buffer go?</p>
+
+<h3 id="cve-2026-5474-cfe_msg_getsize-heap-based-overflow">CVE-2026-5474: CFE_MSG_GetSize heap-based overflow</h3>
+
+<p>The SB delivers the buffer to every subscriber of the message ID. In a default cFS lab, the most interesting subscriber is TO_LAB. It reads everything off the telemetry pipe and forwards it over UDP to the ground station. Real missions typically replace TO_LAB with a mission-specific encoder. This vulnerability specifically requires TO_LAB's passthrough encode path (<code>to_lab_passthru_encode.c:40</code>).</p>
+
+<pre><code class="language-c">CFE_Status_t TO_LAB_EncodeOutputMessage(const CFE_SB_Buffer_t *SourceBuffer,
+                                        const void **DestBufferOut, size_t *DestSizeOut)
+{
+    CFE_Status_t   ResultStatus;
+    CFE_MSG_Size_t SourceBufferSize;
+
+    ResultStatus = CFE_MSG_GetSize(&amp;SourceBuffer-&gt;Msg, &amp;SourceBufferSize);
+
+    *DestBufferOut = SourceBuffer;
+    *DestSizeOut   = SourceBufferSize;
+
+    return ResultStatus;
+}
+</code></pre>
+
+<p>TO_LAB's encode reads the CCSDS Length via <code>CFE_MSG_GetSize</code> and forwards it as the send size, with no validation. The only cap is the SB's 32KB ceiling, applied before the buffer is ever allocated.</p>
+
+<p>XPL_LAB publishes 512 bytes from a 20-byte struct. The check passes, and TO_LAB's encode hands the result to <code>OS_SocketSendTo</code>:</p>
+
+<pre><code class="language-c">CfeStatus = TO_LAB_EncodeOutputMessage(SBBufPtr, &amp;NetBufPtr, &amp;NetBufSize);
+if (CfeStatus != CFE_SUCCESS) { ... }
+else {
+    OsStatus = OS_SocketSendTo(TO_LAB_Global.TLMsockid, NetBufPtr, NetBufSize, &amp;d_addr);
+}
+</code></pre>
+
+<p>An attacker-controlled length determines how many bytes TO_LAB ships over UDP, bounded only by the SB's 32KB cap. TO_LAB isn't reading out of bounds itself. It trusts the CCSDS Length and transmits whatever 5475 already deposited in the SB buffer.</p>
+
+<p>That's why these are two CVE IDs for one root cause. It might be that the fix has not landed as <code>CFE_SB_TransmitMsg</code> has dozens of call sites in the cFS bundle alone, with more in every mission codebase built on top.</p>
+
+<p>I checked if this could be triggered from outside. CI_LAB's passthrough decode (<code>ci_lab_passthru_decode.c:95-97</code>) drops any packet whose CCSDS Length is bigger than the bytes received on the socket. So the chain needs an app already on the bus.</p>
+
+<p>TO_LAB sends to a fixed IP (<code>TO_LAB_Global.tlm_dest_IP</code>, set via the <code>EnableOutput</code> command). The leaked data goes to the configured ground station, not to the attacker. That means exploitation also needs network access to the ground station, or a prior compromise of it.</p>
+
+<p>We can draft a quick PoC to confirm. This one skips the SB and calls <code>TO_LAB_EncodeOutputMessage</code> directly on a 20-byte struct. The kernel itself over-reads 492 bytes of adjacent heap during <code>OS_SocketSendTo</code>. In the full chain, the over-read has already happened upstream in 5475, and TO_LAB ships what's sitting in the (oversized) SB buffer.</p>
+
+<p><img src="../assets/images/to_lab_sendto_impact_poc_output.png" alt="TO_LAB sendto PoC output">
+<img src="../assets/images/to_lab_sendto_impact_poc_output_listener.png" alt="TO_LAB sendto PoC, listener receiving leaked bytes"></p>
+
+<h3 id="lab-demo">lab demo</h3>
+
+<video src="../assets/videos/5474_vector_video.mp4" controls="controls" width="100%"></video>
+
+<p>In the video I start by typing <code>status</code> to show the spacecraft in a clean state: altitude 408 km, fuel 150 kg. Then <code>noop NAV_LAB</code>, which sends a command to the nav app and gets an EVS event back confirming it's alive and listening.</p>
+
+<p>The TRIGGER command itself is a normal, well-formed CCSDS packet. CI_LAB validates it and forwards it onto the Software Bus. XPL_LAB subscribes to TRIGGER (MsgID <code>0x18A0</code>, FC=2). When it fires, it publishes two things straight back onto the SB: a malformed message on MsgID <code>0x08A0</code> with an inflated CCSDS Length (the leak) and a NAV_LAB BURN command (so we can see the silent leak next to a visible command). Neither passes through CI_LAB's ingress check.</p>
+
+<p>The first thing that appears is the anomaly: an XPL_LAB packet claiming 512 bytes when the struct is 20. The extra 492 bytes are adjacent stack memory that TO_LAB forwards over UDP to the ground station. Right after, a NAV_LAB EVS event fires. Altitude starts dropping, fuel ticks down, thruster shows FIRING.</p>
+
+<h2 id="cve-2026-5476-cfe_tbl_validatecodecloadsize-integer-overflow">CVE-2026-5476: CFE_TBL_ValidateCodecLoadSize integer overflow</h2>
+
+<p>After hunting through the SB, I started wondering if anything else in cFS reads a size field from outside. The table service was worth a check. Tables hold runtime configuration like sensor thresholds and scheduler timings. Updates come from <code>.tbl</code> files on the flight filesystem. cFS loads them at boot (via <code>CFE_TBL_FILEDEF</code>) or at runtime when the ground sends <code>CFE_TBL_LOAD_CC</code> (MsgID <code>0x1804</code>, FC=2). Each <code>.tbl</code> file has its own header, separate from CCSDS. Two fields matter: <code>Offset</code> (where in the target buffer the data should land) and <code>NumBytes</code> (how many bytes to write).</p>
+
+<p>This time the bounds check exists. Before any file data gets written, <code>CFE_TBL_ValidateCodecLoadSize()</code> runs. The function is defined at <code>cfe_tbl_passthru_codec.c:155</code>, and the overflow site is at line 163 (cFE submodule pin <code>70b80172</code>, which is what the main repo points at as of this writing).</p>
+
+<pre><code class="language-c">uint32 ProjectedSize;
+ProjectedSize = HeaderPtr-&gt;Offset + HeaderPtr-&gt;NumBytes;
+if (ProjectedSize &gt; ActualSize)
+{
+    /* reject as too large */
+}
+</code></pre>
+
+<p>Both <code>Offset</code> and <code>NumBytes</code> come from the table file header. Both are <code>uint32</code>. So if you pick two values that overflow past 2^32 but wrap back to something small, the check compares the wrap (not the true sum) against <code>ActualSize</code>.</p>
+
+<p>For example, <code>Offset = 0xFFFFFF00</code> and <code>NumBytes = 0x200</code>:</p>
+
+<pre><code class="language-c">Offset       = 0xFFFFFF00  (4,294,967,040)
+NumBytes     = 0x00000200  (512)
+True sum     = 0x100000100 (4,294,967,552)
+uint32 wrap  = 0x00000100  (256)
+</code></pre>
+
+<p>If the table size is 256 bytes, <code>ProjectedSize</code> (256) passes the <code>&gt; ActualSize</code> (256) check. The bounds check is defeated.</p>
+
+<p>The same <code>Offset</code> also flows into <code>CFE_TBL_LoadContentFromFile</code> (callers at <code>cfe_tbl_load.c:654</code> and <code>cfe_tbl_task_cmds.c:416</code>). That function runs its own bounds check at <code>cfe_tbl_load.c:252</code>:</p>
+
+<pre><code class="language-python">LoadTailSize = Offset + NumBytes;
+if (LoadTailSize &gt; CFE_TBL_LoadBuffGetAllocSize(WorkingBufferPtr))
+{
+    /* CFE_TBL_FILE_TOO_BIG_ERR_EID (event 75) */
+}
+</code></pre>
+
+<p><code>LoadTailSize</code> is a <code>size_t</code>. On 32-bit flight hardware, <code>size_t</code> is 32 bits, so the sum wraps exactly like the first one. Both checks pass. On 64-bit Linux, <code>size_t</code> is 64 bits. The sum doesn't wrap, and this check catches the load.</p>
+
+<p>On 32-bit, both checks are gone. The loader is free to write. But where?</p>
+
+<p>It targets <code>staging_buffer + Offset</code>. <code>Offset</code> is <code>0xFFFFFF00</code>, almost 4GB. On 32-bit systems, addresses only go up to 4GB. Adding a number that big to a pointer wraps around. As <code>0xFFFFFF00</code> equals 2^32 − 256, adding it to a pointer is the same as subtracting 256. The write then starts 256 bytes before the staging buffer.</p>
+
+<p><code>OS_read()</code> then writes 512 bytes from there. The first 256 bytes land just before the buffer. The last 256 land inside it. Different <code>Offset</code> values clearly shift this window, but always near the staging buffer.</p>
+
+<p>One more catch. That staging buffer isn't the live table. The load lands in a staging slot (the <code>LoadInProgress</code> one). The live table, the one flight software actually reads, only gets swapped in when someone sends <code>CFE_TBL_ACTIVATE_CC</code>. Until that command fires, the OOB data just sits there.</p>
+
+<p>We can prove the bypass on its own. Build a <code>.tbl</code> file with <code>Offset=0xFFFFFF00</code> and <code>NumBytes=0x200</code>. Call <code>CFE_TBL_ValidateCodecLoadSize</code> directly on a 2436-byte table. The check returns <code>CFE_SUCCESS</code> instead of <code>CFE_TBL_ERR_FILE_TOO_LARGE</code>:</p>
+
+<p><img src="../assets/images/tbl_overflow_impact_poc_output.png" alt="TBL overflow PoC output"></p>
+
+<p>That proves the bypass, not that the write lands.</p>
+
+<p>The full chain is hard to pull off. An attacker needs three things. First, the authority to send <code>CFE_TBL_LOAD_CC</code>. Second, a way to get the malicious <code>.tbl</code> onto the flight filesystem (usually an FTP service or a pre-staged file from a compromised build). Third, an operator who eventually sends <code>CFE_TBL_ACTIVATE_CC</code> to swap the corrupted buffer in. With all three, a compromised ground station should be able to write attacker-controlled data into the target table and into whatever sits in memory right before its buffer.</p>
+
+<h3 id="lab-demo-2">lab demo</h3>
+
+<p>The lab runs on 64-bit Linux, so the OOB write doesn't land here. The video shows what a successful 5476 exploit would look like in practice: scripted commands replay what a corrupted scheduler table would do to the spacecraft.</p>
+
+<video src="../assets/videos/5476_vector_video.mp4" controls="controls" width="100%"></video>
+
+<p>I start again with <code>status</code> to show the spacecraft in a clean state: attitude NOMINAL, solar ~2400W, full battery, signal showing LOCK. Then <code>inject 5476</code> fires a TBL LOAD command for <code>/cf/malicious.tbl</code> and queues up a scripted follow-up.</p>
+
+<p>The first thing on screen is the TBL event: <code>CFE_TBL (Event 60): LoadFile,app=CFE_TBL,tbl=SCH_LAB.Schedule:No working buffers available</code>. This event only fires if <code>CFE_TBL_ValidateCodecLoadSize</code> already returned <code>CFE_SUCCESS</code>. That means the uint32 wrap worked.</p>
+
+<p>I tried to replicate a denial over time: recurring retrograde burns, a panel retract, and an antenna stow, so you can watch altitude, power, and the ground link all degrade on the same timeline.</p>
+
+<p>Eight seconds after the table load, a retrograde <code>NAV_LAB BURN dv=15.0</code> fires. Altitude drops and velocity climbs with it. A few seconds later, <code>EPS_LAB PANELS RETRACT</code> runs. Solar arrays stow and battery starts draining. Another BURN. Finally, <code>COMMS_LAB ANTENNA STOW</code> cuts the ground link. Signal flips to NOLOCK.</p>
+
+<h2 id="cve-2026-5473-pickleload-deserialization">CVE-2026-5473: pickle.load deserialization</h2>
+
+<p>As we saw, every CCSDS packet we've been tracking starts life on a ground station. The cFS Ground System is a Python/Qt GUI that operators use to send commands to the flight software over UDP. It runs on the operator's workstation, typically a machine on the Mission Operations Center network, and loads command and parameter definitions from files on disk. At the cFS-GroundSystem commit currently pinned in <code>nasa/cFS</code> main (<code>2e004a6</code>), those files are Python pickle files, loaded like this.</p>
+
+<p><code>UdpCommands.py</code> (lines 68-69, 177-178):</p>
+
+<pre><code>with open(pickle_file, 'rb') as pickle_obj:
+    cmd_desc, cmd_codes, param_files = pickle.load(pickle_obj)
+</code></pre>
+
+<p>Same pattern in <code>CommandSystem.py</code> (lines 71-72) and <code>Parameter.py</code> (lines 130-132).</p>
+
+<p>Python's <code>pickle</code> module executes arbitrary code during deserialization. A malicious pickle can specify <code>os.system</code> as the callable and an arbitrary shell command as the argument. <a href="https://docs.python.org/3/library/pickle.html" rel="noopener noreferrer">Python's own documentation</a> warns: "Only unpickle data you trust."</p>
+
+<p>We can show it with a quick Python script. Build a <code>MaliciousPickle</code> class whose <code>__reduce__</code> returns <code>(os.system, ("touch /tmp/poc_monello_cetriolino",))</code>. Dump it to a <code>.pkl</code> file, then call <code>pickle.load()</code> on it the same way <code>UdpCommands.py:178</code> does.</p>
+
+<p><img src="../assets/images/pickle_rce_impact_poc_output.png" alt="pickle.load RCE PoC output"></p>
+
+<p><code>pickle.load</code> on untrusted files is a well-known vector. An attacker who can write to the <code>CommandFiles/</code> or <code>ParameterFiles/</code> directories gets arbitrary code execution with the ground station operator's privileges when they open the command GUI. Write access can come from a supply chain compromise, a shared filesystem, or another file-write vulnerability.</p>
+
+<h3 id="lab-demo-3">lab demo</h3>
+
+<video src="../assets/videos/5473_vector_video.mp4" controls="controls" width="100%"></video>
+
+<p><code>gsload</code> tells the ground station container to run its real <code>pickle.load()</code> code path from <code>UdpCommands.py:178</code> on a pre-staged malicious <code>.pkl</code> file in <code>CommandFiles/</code>. That's the same vulnerable call an operator would trigger by opening the command GUI. <code>pickle.load()</code> executes <code>os.system()</code> and a marker file appears as proof of RCE.</p>
+
+<p>Once the shell command lands, the compromised ground station chains three valid CCSDS commands through CI_LAB: <code>ACS_LAB SET_MODE TUMBLE</code> (0x18B4 FC=3), <code>EPS_LAB PANELS RETRACT</code> (0x18B2 FC=2) and <code>COMMS_LAB ANTENNA STOW</code> (0x18B6 FC=2). cFS executes them the same way it would for a legitimate operator. </p>
+
+<p>Within two seconds the dashboard flips: attitude NOMINAL to TUMBLE, solar 2400W to 0W, signal LOCK to NOLOCK.</p>
+
+<h2 id="impact">Impact</h2>
+
+<p>CVE-2026-5475 and CVE-2026-5476 are in the core cFE framework, shared by any mission without local patches. CVE-2026-5474 is in TO_LAB, which the bundle ships as an example app. Missions that need operational telemetry output typically replace it. CVE-2026-5473 is in cFS-GroundSystem, a ground tool NASA documents in the cFS quickstart. Missions running COSMOS, ITOS, or ASIST don't inherit it.</p>
+
+<p>5475 lets an app on the bus leak up to 32KB of flight software memory into an SB buffer, and every subscriber sees that buffer. If TO_LAB is still the one sending telemetry out, those bytes go straight over UDP to the ground station. As far as my understanding goes, you need an app already on the bus to start the chain, and nothing from the network can reach it.</p>
+
+<p>5476 only matters on 32-bit flight hardware. The out-of-bounds write happens during the TBL LOAD, not at activation. Activation swaps the corrupted staging buffer into the live table, and the flight software starts reading it from there. To pull off the chain you need <code>CFE_TBL_LOAD_CC</code> authority, a crafted <code>.tbl</code> on the flight filesystem, and eventually a <code>CFE_TBL_ACTIVATE_CC</code> from the operator.</p>
+
+<p>5473 is arbitrary code execution on the ground station operator's machine. It fires when the GUI opens a page and loads its <code>.pkl</code> from <code>CommandFiles/</code> or <code>ParameterFiles/</code>. You need write access to one of those directories. Once your code runs on the operator's box, anything you send to the spacecraft looks the same as a real command to cFS.</p>
+
+<p>I contacted NASA Goddard Space Flight Center (GSFC), which gave the green light to publish. Some of these will be patched in the coming weeks.</p>
+
+<p>Till next time 🚀</p>
+
+<h2 id="timeline">Timeline</h2>
+
+<table>
+<thead>
+<tr>
+  <th>Date</th>
+  <th>Event</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>2026-03-18</td>
+  <td>Reported via GitHub Security Advisories: <a href="https://github.com/nasa/cFS/issues/951" rel="noopener noreferrer">nasa/cFS#951</a>, <a href="https://github.com/nasa/cFS/issues/952" rel="noopener noreferrer">nasa/cFS#952</a>, <a href="https://github.com/nasa/cFS/issues/953" rel="noopener noreferrer">nasa/cFS#953</a>, <a href="https://github.com/nasa/cFE/issues/2692" rel="noopener noreferrer">nasa/cFE#2692</a></td>
+</tr>
+<tr>
+  <td>2026-04-03</td>
+  <td><a href="https://www.cve.org/CVERecord?id=CVE-2026-5473" rel="noopener noreferrer">CVE-2026-5473</a>, <a href="https://www.cve.org/CVERecord?id=CVE-2026-5474" rel="noopener noreferrer">CVE-2026-5474</a>, <a href="https://www.cve.org/CVERecord?id=CVE-2026-5475" rel="noopener noreferrer">CVE-2026-5475</a>, <a href="https://www.cve.org/CVERecord?id=CVE-2026-5476" rel="noopener noreferrer">CVE-2026-5476</a> assigned</td>
+</tr>
+<tr>
+  <td>2026-04-13</td>
+  <td>NASA cFS Product Development acknowledged and approved to publish via email</td>
+</tr>
+</tbody>
+</table>
+
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <span class="footer-text">&copy; 2026 0rbitingZer0</span>
+      <div class="footer-links">
+        <a href="https://github.com/0rbitingZer0" target="_blank" rel="noopener">github</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="../assets/js/prism.min.js"></script>
+  <script src="../assets/js/prism-python.min.js"></script>
+  <script src="../assets/js/prism-bash.min.js"></script>
+  <script src="../assets/js/prism-javascript.min.js"></script>
+  <script src="../assets/js/prism-json.min.js"></script>
+  <script src="../assets/js/prism-c.min.js"></script>
+</body>
+</html>

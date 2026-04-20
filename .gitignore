@@ -2,6 +2,7 @@
 build.py
 template-*.html
 markdown/
+reviewing/
 
 # Dev/personal assets
 assets/images/avatar.svg
