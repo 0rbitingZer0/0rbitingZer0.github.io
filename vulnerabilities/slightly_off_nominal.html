@@ -246,9 +246,9 @@ if (LoadTailSize &gt; CFE_TBL_LoadBuffGetAllocSize(WorkingBufferPtr))
 
 <p>On 32-bit, both checks are gone. The loader is free to write. But where?</p>
 
-<p>It targets <code>staging_buffer + Offset</code>. <code>Offset</code> is <code>0xFFFFFF00</code>, almost 4GB. On 32-bit systems, addresses only go up to 4GB. Adding a number that big to a pointer wraps around. As <code>0xFFFFFF00</code> equals 2^32 − 256, adding it to a pointer is the same as subtracting 256. The write then starts 256 bytes before the staging buffer.</p>
+<p>It targets <code>staging_buffer + Offset</code>. <code>Offset</code> is <code>0xFFFFFF00</code>, almost 4GB. On 32-bit systems, addresses only go up to 4GB. Adding a number that big to a pointer wraps around. As <code>0xFFFFFF00</code> equals 2^32 − 256, adding it to a pointer is the same as subtracting 256.</p>
 
-<p><code>OS_read()</code> then writes 512 bytes from there. The first 256 bytes land just before the buffer. The last 256 land inside it. Different <code>Offset</code> values clearly shift this window, but always near the staging buffer.</p>
+<p>From that address, <code>OS_read()</code> writes 512 bytes: the first 256 land just before the staging buffer, the last 256 land inside it. Different <code>Offset</code> values shift this window, but always near the staging buffer.</p>
 
 <p>One more catch. That staging buffer isn't the live table. The load lands in a staging slot (the <code>LoadInProgress</code> one). The live table, the one flight software actually reads, only gets swapped in when someone sends <code>CFE_TBL_ACTIVATE_CC</code>. Until that command fires, the OOB data just sits there.</p>
 
