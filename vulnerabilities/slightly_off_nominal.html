@@ -76,14 +76,16 @@
 
 <p>What's left is the ground side. A <strong>ground system</strong> sends commands to the flight software over UDP. Real missions use all sorts of tools here: COSMOS, ITOS, ASIST. The cFS repo ships a reference implementation called cFS-GS, a Python/Qt GUI, but that's one option among many. CI_LAB receives the UDP packets and puts them on the Software Bus. TO_LAB does the reverse: it reads messages from the SB and sends them over UDP to the ground station.</p>
 
-<p>Lastly, every cFS command has a MsgID (its routing key on the Software Bus) and a function code (FC, which picks the operation within the app). For example, <code>CFE_TBL_LOAD_CC</code> is MsgID <code>0x1804</code> with FC=2. MsgID lives in the primary header; FC lives in the secondary header that follows, on command packets.</p>
+<p>Lastly, every cFS command has a MsgID (its routing key on the Software Bus) and a function code (FC, which picks the operation within the app). For example, <code>CFE_TBL_LOAD_CC</code> is MsgID <code>0x1804</code> with FC=2.</p>
 
 <p>The Software Bus is the main character here. Every cFS application communicates by publishing and subscribing to messages on the bus. No direct function calls between applications. 
 Each message is wrapped in <strong><a href="https://ccsds.org/Pubs/133x0b2e2.pdf" rel="noopener noreferrer">CCSDS</a></strong> space packet headers.</p>
 
 <p><img src="../assets/images/ccsds.png" alt="CCSDS primary header layout"></p>
 
-<p>The primary header is 6 bytes across three 16-bit words: Stream ID, Sequence Control, and Data Length. The <strong>Length</strong> field is the one that matters here. It's 2 bytes, encoding total packet size minus 7: 6 for the primary header, and 1 more because CCSDS encodes Length as (data-field-octets − 1). cFS trusts that number everywhere: memcpy sizes, sendto lengths, buffer allocations. Nothing along the way double-checks it.</p>
+<p>The primary header is 6 bytes across three 16-bit words: Stream ID, Sequence Control, and Data Length. The <strong>Length</strong> field is the one that matters here. It's 2 bytes, encoding the total number of octets in the packet data field, minus 1. Since the data field is the packet minus the 6-byte primary header, the full packet size is Length + 6 + 1 = Length + 7. cFS trusts that number everywhere: memcpy sizes, sendto lengths, buffer allocations. Nothing along the way double-checks it.</p>
+
+<p>cFS packs MsgID into the first 16-bit word of the primary header (derived from the CCSDS APID and flag bits), and FC into the secondary header on command packets.</p>
 
 <p>In mission operations, the command path runs like this:</p>
 
@@ -105,7 +107,7 @@ Each message is wrapped in <strong><a href="https://ccsds.org/Pubs/133x0b2e2.pdf
 
 <p>From the terminal you can send raw CCSDS commands or fire high-level actions (burns, attitude slews, panel retracts and antenna stows). Every command goes out as a real UDP packet to CI_LAB, and the flight software's telemetry and EVS events stream back onto the dashboard live. A MISSION banner at the top flips CRITICAL or DEGRADED when the spacecraft state crosses operational limits.</p>
 
-<p>Note that the idea was to build a telemetry tool. Housekeeping packets from cFS flight applications drive the altitude, fuel, and orbit readouts. The only physics in the loop is the velocity tracks altitude through <a href="https://www.thespacetechie.com/vis-viva-equation/" rel="noopener noreferrer">vis-viva</a> and burns consume fuel per delta-v. Beyond that, the spacecraft state isn't a physics simulation. The goal is only to show what an exploit does to the telemetry you see.</p>
+<p>Note that the idea was to build a telemetry tool. Housekeeping packets from cFS flight applications drive the altitude, fuel, and orbit readouts. The only physics in the loop is that velocity tracks altitude through <a href="https://www.thespacetechie.com/vis-viva-equation/" rel="noopener noreferrer">vis-viva</a>, and burns consume fuel per <a href="https://space.stackexchange.com/questions/27320/how-much-fuel-is-necessary-to-cause-delta-v" rel="noopener noreferrer">delta-v</a>. Beyond that, the spacecraft state isn't a physics simulation. The goal is only to show what an exploit does to the telemetry you see.</p>
 
 <p>Once it was up and running, with commands flowing and telemetry streaming back, I started reading, analysing and injecting through the cFS source to understand what was happening to the packets.</p>
 
@@ -186,7 +188,7 @@ else {
 }
 </code></pre>
 
-<p>An attacker-controlled length determines how many bytes TO_LAB ships over UDP, bounded only by the SB's 32KB cap. TO_LAB isn't reading out of bounds itself. It trusts the CCSDS Length and transmits whatever 5475 already deposited in the SB buffer.</p>
+<p>The CCSDS Length field determines how many bytes TO_LAB ships over UDP. TO_LAB isn't reading out of bounds itself, it trusts the Length value and transmits whatever 5475 already deposited in the SB buffer.</p>
 
 <p>That's why these are two CVE IDs for one root cause. It might be that the fix has not landed as <code>CFE_SB_TransmitMsg</code> has dozens of call sites in the cFS bundle alone, with more in every mission codebase built on top.</p>
 
@@ -205,9 +207,9 @@ else {
 
 <p>In the video I start by typing <code>status</code> to show the spacecraft in a clean state: altitude 408 km, fuel 150 kg. Then <code>noop NAV_LAB</code>, which sends a command to the nav app and gets an EVS event back confirming it's alive and listening.</p>
 
-<p>The TRIGGER command itself is a normal, well-formed CCSDS packet. CI_LAB validates it and forwards it onto the Software Bus. XPL_LAB, a custom exploit app on the bus, subscribes to MsgID <code>0x18A0</code> and handles the TRIGGER command on FC=2. When it fires, it publishes two things straight back onto the SB: a malformed message on MsgID <code>0x08A0</code> with an inflated CCSDS Length (the leak) and a NAV_LAB BURN command (so we can see the silent leak next to a visible command). Neither passes through CI_LAB's ingress check.</p>
+<p>The TRIGGER command itself is a normal, well-formed CCSDS packet. CI_LAB validates it and forwards it onto the Software Bus, where XPL_LAB, a custom exploit app on the bus, is subscribed (MsgID <code>0x18A0</code>, FC=2). On receipt, XPL_LAB publishes two messages straight back onto the SB: a malformed packet on MsgID <code>0x08A0</code> with an inflated CCSDS Length (the leak), and a NAV_LAB BURN command (a visible action next to the silent leak).</p>
 
-<p>The first thing that appears is the anomaly: an XPL_LAB packet claiming 512 bytes when the struct is 20. The extra 492 bytes are adjacent memory that TO_LAB forwards over UDP to the ground station. Right after, a NAV_LAB EVS event fires. Altitude starts dropping, fuel ticks down, thruster shows FIRING.</p>
+<p>The first thing that appears on the dashboard is the anomaly: an XPL_LAB packet claiming 512 bytes when the struct is 20. The extra 492 bytes are adjacent memory that TO_LAB forwards over UDP to the ground station. Right after, a NAV_LAB EVS event fires. Altitude starts dropping, fuel ticks down, thruster shows FIRING.</p>
 
 <h2 id="cve-2026-5476-cfe_tbl_validatecodecloadsize-integer-overflow">CVE-2026-5476: CFE_TBL_ValidateCodecLoadSize integer overflow</h2>
 
@@ -272,9 +274,7 @@ if (LoadTailSize &gt; CFE_TBL_LoadBuffGetAllocSize(WorkingBufferPtr))
 
 <p>The first thing on screen is the TBL event: <code>CFE_TBL (Event 60): LoadFile,app=CFE_TBL,tbl=SCH_LAB.Schedule:No working buffers available</code>. This event only fires if <code>CFE_TBL_ValidateCodecLoadSize</code> already returned <code>CFE_SUCCESS</code>. That means the uint32 wrap worked.</p>
 
-<p>I tried to replicate a denial over time: recurring retrograde burns, a panel retract, and an antenna stow, so you can watch altitude, power, and the ground link all degrade on the same timeline.</p>
-
-<p>Eight seconds after the table load, a retrograde <code>NAV_LAB BURN dv=15.0</code> fires. Altitude drops and velocity climbs with it. A few seconds later, <code>EPS_LAB PANELS RETRACT</code> runs. Solar arrays stow and battery starts draining. Another BURN. Finally, <code>COMMS_LAB ANTENNA STOW</code> cuts the ground link. Signal flips to NOLOCK.</p>
+<p>I tried to replicate a denial over time: recurring retrograde burns, a panel retract, and an antenna stow, so you can watch altitude, power, and the ground link all degrade on the same timeline. Eight seconds after the table load, a retrograde <code>NAV_LAB BURN dv=15.0</code> fires. Altitude drops and velocity climbs with it. A few seconds later, <code>EPS_LAB PANELS RETRACT</code> runs. Solar arrays stow and battery starts draining. Another BURN. Finally, <code>COMMS_LAB ANTENNA STOW</code> cuts the ground link. Signal flips to NOLOCK.</p>
 
 <h2 id="cve-2026-5473-pickleload-deserialization">CVE-2026-5473: pickle.load deserialization</h2>
 
@@ -302,9 +302,7 @@ if (LoadTailSize &gt; CFE_TBL_LoadBuffGetAllocSize(WorkingBufferPtr))
 
 <p><code>gsload</code> tells the ground station container to run its real <code>pickle.load()</code> code path from <code>UdpCommands.py:178</code> on a pre-staged malicious <code>.pkl</code> file in <code>CommandFiles/</code>. That's the same vulnerable call an operator would trigger by opening the command GUI. <code>pickle.load()</code> executes <code>os.system()</code> and a marker file appears as proof of RCE.</p>
 
-<p>Once the shell command lands, the compromised ground station chains three valid CCSDS commands through CI_LAB: <code>ACS_LAB SET_MODE TUMBLE</code> (0x18B4 FC=3), <code>EPS_LAB PANELS RETRACT</code> (0x18B2 FC=2) and <code>COMMS_LAB ANTENNA STOW</code> (0x18B6 FC=2). cFS executes them the same way it would for a legitimate operator. </p>
-
-<p>Within two seconds the dashboard flips: attitude NOMINAL to TUMBLE, solar 2400W to 0W, signal LOCK to NOLOCK.</p>
+<p>Once the shell command lands, the compromised ground station chains three valid CCSDS commands through CI_LAB: <code>ACS_LAB SET_MODE TUMBLE</code> (0x18B4 FC=3), <code>EPS_LAB PANELS RETRACT</code> (0x18B2 FC=2) and <code>COMMS_LAB ANTENNA STOW</code> (0x18B6 FC=2). cFS executes them the same way it would for a legitimate operator. Within two seconds the dashboard flips: attitude NOMINAL to TUMBLE, solar 2400W to 0W, signal LOCK to NOLOCK.</p>
 
 <h2 id="impact">Impact</h2>
 
