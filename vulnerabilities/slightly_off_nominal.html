@@ -205,7 +205,7 @@ else {
 
 <p>In the video I start by typing <code>status</code> to show the spacecraft in a clean state: altitude 408 km, fuel 150 kg. Then <code>noop NAV_LAB</code>, which sends a command to the nav app and gets an EVS event back confirming it's alive and listening.</p>
 
-<p>The TRIGGER command itself is a normal, well-formed CCSDS packet. CI_LAB validates it and forwards it onto the Software Bus. XPL_LAB, a custom exploit app on the bus, subscribes to TRIGGER (MsgID <code>0x18A0</code>, FC=2). When it fires, it publishes two things straight back onto the SB: a malformed message on MsgID <code>0x08A0</code> with an inflated CCSDS Length (the leak) and a NAV_LAB BURN command (so we can see the silent leak next to a visible command). Neither passes through CI_LAB's ingress check.</p>
+<p>The TRIGGER command itself is a normal, well-formed CCSDS packet. CI_LAB validates it and forwards it onto the Software Bus. XPL_LAB, a custom exploit app on the bus, subscribes to MsgID <code>0x18A0</code> and handles the TRIGGER command on FC=2. When it fires, it publishes two things straight back onto the SB: a malformed message on MsgID <code>0x08A0</code> with an inflated CCSDS Length (the leak) and a NAV_LAB BURN command (so we can see the silent leak next to a visible command). Neither passes through CI_LAB's ingress check.</p>
 
 <p>The first thing that appears is the anomaly: an XPL_LAB packet claiming 512 bytes when the struct is 20. The extra 492 bytes are adjacent memory that TO_LAB forwards over UDP to the ground station. Right after, a NAV_LAB EVS event fires. Altitude starts dropping, fuel ticks down, thruster shows FIRING.</p>
 
@@ -248,7 +248,7 @@ if (LoadTailSize &gt; CFE_TBL_LoadBuffGetAllocSize(WorkingBufferPtr))
 
 <p>When both checks are gone, the loader is free to write. But where?</p>
 
-<p>It targets <code>staging_buffer + Offset</code>. <code>Offset</code> is <code>0xFFFFFF00</code>, almost 4GB. On 32-bit systems, addresses only go up to 4GB. Adding a number that big to a pointer wraps around. As <code>0xFFFFFF00</code> equals 2^32 − 256, adding it to a pointer is the same as subtracting 256.</p>
+<p>It targets <code>staging_buffer + Offset</code>. <code>Offset</code> is <code>0xFFFFFF00</code>, almost 4GB. Per the C standard, pointer arithmetic that leaves its object is undefined behavior. In practice, on 32-bit systems addresses only go up to 4GB, and adding a number that big to a pointer wraps around. As <code>0xFFFFFF00</code> equals 2^32 − 256, adding it to a pointer is the same as subtracting 256.</p>
 
 <p>From that address, <code>OS_read()</code> writes 512 bytes: the first 256 land just before the staging buffer, the last 256 land inside it. Different <code>Offset</code> values shift this window, but always near the staging buffer.</p>
 
