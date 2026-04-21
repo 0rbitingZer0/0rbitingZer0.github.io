@@ -52,7 +52,7 @@
       
 
       <div class="article-content">
-        <p>Space tech has always fascinated me, especially the low-level side of how spacecraft communicate. I wanted to learn more. So a few weeks ago, I decided to build a small simulator to explore how telemetry moves between a spacecraft in orbit and the ground, and how the protocols fit together.</p>
+        <p>Space tech has always fascinated me, especially the low-level side of how spacecraft communicate. I wanted to understand it better, so a few weeks ago I decided to build a small simulator to explore space protocols and how telemetry moves between a spacecraft in orbit and the ground.</p>
 
 <p>Question: where do you start?</p>
 
@@ -74,10 +74,12 @@
 
 <p>On top of all that, <strong>applications</strong> plug in. They handle command ingestion, telemetry output, and any mission-specific functionality. cFS ships with three default "lab" apps that fill the generic roles out of the box: CI_LAB for command ingest, TO_LAB for telemetry output, and SCH_LAB for scheduling. Mission teams add their own apps alongside these on the same bus: navigation, electrical power (EPS), attitude control (ACS), comms, and thermal.</p>
 
-<p>What's left is the ground side. A <strong>ground system</strong> sends commands to the flight software over UDP. Real missions use all sorts of tools here: COSMOS, ITOS, ASIST. The cFS repo ships a reference implementation called cFS-GS, a Python/Qt GUI, but that's one option among many. CI_LAB receives the UDP packets and puts them on the Software Bus. TO_LAB does the reverse: it reads messages from the SB and sends them over UDP to the ground station. Lastly, every cFS command has a MsgID (its routing key on the Software Bus) and a function code (FC, which picks the operation within the app). For example, <code>CFE_TBL_LOAD_CC</code> is MsgID <code>0x1804</code> with FC=2. MsgID lives in the primary header; FC lives in the secondary header that follows, on command packets.</p>
+<p>What's left is the ground side. A <strong>ground system</strong> sends commands to the flight software over UDP. Real missions use all sorts of tools here: COSMOS, ITOS, ASIST. The cFS repo ships a reference implementation called cFS-GS, a Python/Qt GUI, but that's one option among many. CI_LAB receives the UDP packets and puts them on the Software Bus. TO_LAB does the reverse: it reads messages from the SB and sends them over UDP to the ground station.</p>
+
+<p>Lastly, every cFS command has a MsgID (its routing key on the Software Bus) and a function code (FC, which picks the operation within the app). For example, <code>CFE_TBL_LOAD_CC</code> is MsgID <code>0x1804</code> with FC=2. MsgID lives in the primary header; FC lives in the secondary header that follows, on command packets.</p>
 
 <p>The Software Bus is the main character here. Every cFS application communicates by publishing and subscribing to messages on the bus. No direct function calls between applications. 
-Each message is wrapped in <strong>CCSDS</strong> space packet headers.</p>
+Each message is wrapped in <strong><a href="https://ccsds.org/Pubs/133x0b2e2.pdf" rel="noopener noreferrer">CCSDS</a></strong> space packet headers.</p>
 
 <p><img src="../assets/images/ccsds.png" alt="CCSDS primary header layout"></p>
 
@@ -148,7 +150,7 @@ if (Status == CFE_SUCCESS)
 
 <p>On flat-memory RTOS deployments there are no hardware boundaries between applications. Adjacent memory belongs to whoever the allocator put there last. The SB does cap each message at 32KB, but that's still far larger than any real struct.</p>
 
-<p>A small PoC confirms it. Allocate 32 bytes, set the CCSDS header to claim 512, and the memcpy reads 480 bytes of adjacent heap into the SB buffer. XPL_LAB, a custom exploit app on the bus (see video below), does the same thing inside the running cFS with a 20-byte struct. ASan catches the over-read:</p>
+<p>A small PoC confirms it. Allocate 32 bytes, set the CCSDS header to claim 512, and the memcpy reads 480 bytes of adjacent memory into the SB buffer. ASan catches the over-read:</p>
 
 <p><img src="../assets/images/sb_overread_impact_poc_output.png" alt="SB over-read PoC output"></p>
 
@@ -175,7 +177,7 @@ if (Status == CFE_SUCCESS)
 
 <p>TO_LAB's encode reads the CCSDS Length via <code>CFE_MSG_GetSize</code> and forwards it as the send size, with no validation. The only cap is the SB's 32KB ceiling, applied before the buffer is ever allocated.</p>
 
-<p>XPL_LAB publishes 512 bytes from a 20-byte struct. The check passes, and TO_LAB's encode hands the result to <code>OS_SocketSendTo</code>:</p>
+<p>If an app publishes 512 bytes from a 20-byte struct, the check passes, and TO_LAB's encode hands the result to <code>OS_SocketSendTo</code>:</p>
 
 <pre><code class="language-c">CfeStatus = TO_LAB_EncodeOutputMessage(SBBufPtr, &amp;NetBufPtr, &amp;NetBufSize);
 if (CfeStatus != CFE_SUCCESS) { ... }
@@ -192,7 +194,7 @@ else {
 
 <p>TO_LAB sends to a fixed IP (<code>TO_LAB_Global.tlm_dest_IP</code>, set via the <code>EnableOutput</code> command). The leaked data goes to the configured ground station, not to the attacker. That means exploitation also needs network access to the ground station, or a prior compromise of it.</p>
 
-<p>We can draft a quick PoC to confirm. This one skips the SB and calls <code>TO_LAB_EncodeOutputMessage</code> directly on a 20-byte struct. The kernel itself over-reads 492 bytes of adjacent heap during <code>OS_SocketSendTo</code>. In the full chain, the over-read has already happened upstream in 5475, and TO_LAB ships what's sitting in the (oversized) SB buffer.</p>
+<p>We can draft a quick PoC to confirm. This one skips the SB and calls <code>TO_LAB_EncodeOutputMessage</code> directly on a 20-byte struct. The kernel itself over-reads 492 bytes of adjacent memory during <code>OS_SocketSendTo</code>. In the full chain, the over-read has already happened upstream in 5475, and TO_LAB ships what's sitting in the (oversized) SB buffer.</p>
 
 <p><img src="../assets/images/to_lab_sendto_impact_poc_output.png" alt="TO_LAB sendto PoC output">
 <img src="../assets/images/to_lab_sendto_impact_poc_output_listener.png" alt="TO_LAB sendto PoC, listener receiving leaked bytes"></p>
@@ -203,9 +205,9 @@ else {
 
 <p>In the video I start by typing <code>status</code> to show the spacecraft in a clean state: altitude 408 km, fuel 150 kg. Then <code>noop NAV_LAB</code>, which sends a command to the nav app and gets an EVS event back confirming it's alive and listening.</p>
 
-<p>The TRIGGER command itself is a normal, well-formed CCSDS packet. CI_LAB validates it and forwards it onto the Software Bus. XPL_LAB subscribes to TRIGGER (MsgID <code>0x18A0</code>, FC=2). When it fires, it publishes two things straight back onto the SB: a malformed message on MsgID <code>0x08A0</code> with an inflated CCSDS Length (the leak) and a NAV_LAB BURN command (so we can see the silent leak next to a visible command). Neither passes through CI_LAB's ingress check.</p>
+<p>The TRIGGER command itself is a normal, well-formed CCSDS packet. CI_LAB validates it and forwards it onto the Software Bus. XPL_LAB, a custom exploit app on the bus, subscribes to TRIGGER (MsgID <code>0x18A0</code>, FC=2). When it fires, it publishes two things straight back onto the SB: a malformed message on MsgID <code>0x08A0</code> with an inflated CCSDS Length (the leak) and a NAV_LAB BURN command (so we can see the silent leak next to a visible command). Neither passes through CI_LAB's ingress check.</p>
 
-<p>The first thing that appears is the anomaly: an XPL_LAB packet claiming 512 bytes when the struct is 20. The extra 492 bytes are adjacent stack memory that TO_LAB forwards over UDP to the ground station. Right after, a NAV_LAB EVS event fires. Altitude starts dropping, fuel ticks down, thruster shows FIRING.</p>
+<p>The first thing that appears is the anomaly: an XPL_LAB packet claiming 512 bytes when the struct is 20. The extra 492 bytes are adjacent memory that TO_LAB forwards over UDP to the ground station. Right after, a NAV_LAB EVS event fires. Altitude starts dropping, fuel ticks down, thruster shows FIRING.</p>
 
 <h2 id="cve-2026-5476-cfe_tbl_validatecodecloadsize-integer-overflow">CVE-2026-5476: CFE_TBL_ValidateCodecLoadSize integer overflow</h2>
 
@@ -244,7 +246,7 @@ if (LoadTailSize &gt; CFE_TBL_LoadBuffGetAllocSize(WorkingBufferPtr))
 
 <p><code>LoadTailSize</code> is a <code>size_t</code>. On 32-bit flight hardware, <code>size_t</code> is 32 bits, so the sum wraps exactly like the first one. Both checks pass. On 64-bit Linux, <code>size_t</code> is 64 bits. The sum doesn't wrap, and this check catches the load.</p>
 
-<p>On 32-bit, both checks are gone. The loader is free to write. But where?</p>
+<p>When both checks are gone, the loader is free to write. But where?</p>
 
 <p>It targets <code>staging_buffer + Offset</code>. <code>Offset</code> is <code>0xFFFFFF00</code>, almost 4GB. On 32-bit systems, addresses only go up to 4GB. Adding a number that big to a pointer wraps around. As <code>0xFFFFFF00</code> equals 2^32 − 256, adding it to a pointer is the same as subtracting 256.</p>
 
