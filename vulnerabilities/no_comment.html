@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; font-src 'self'; media-src 'self';">
+  <title>no comment - 0rbitingZer0</title>
+  <meta name="description" content="a pre-auth stack overflow in lwIP&#x27;s SNMPv3 parser.">
+  <meta property="og:title" content="no comment">
+  <meta property="og:description" content="a pre-auth stack overflow in lwIP&#x27;s SNMPv3 parser.">
+  <meta property="og:type" content="article">
+  <link rel="icon" href="../assets/images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../assets/css/style.css">
+  <link rel="stylesheet" href="../assets/css/prism-tomorrow.min.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container">
+      <a href="../index.html" class="site-logo">0rbitingZer0</a>
+      <nav class="site-nav">
+        <a href="../notes/index.html">notes</a>
+        <a href="../vulnerabilities/index.html" class="active">vulns</a>
+        <a href="../about.html">about</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="container">
+      <a href="index.html" class="back-link">disclosures</a>
+      <div class="article-header">
+        <h1>no comment</h1>
+        <p class="meta" style="font-style: italic; margin-top: 0.3rem;">a pre-auth stack overflow in lwIP&#x27;s SNMPv3 parser.</p>
+        <div class="meta">2026-07-09</div>
+      </div>
+
+      <div class="vuln-details">
+        <dl>
+          <dt>CVE ID</dt><dd>CVE-2026-8836</dd>
+          
+          
+          <dt>Vendor</dt><dd>lwIP Project</dd>
+          <dt>Product</dt><dd>lwIP (Lightweight IP)</dd>
+          <dt>Versions</dt><dd>2.1.0 - 2.2.1</dd>
+          
+          
+          
+        </dl>
+      </div>
+
+      
+
+      <div class="article-content">
+        <p>This one's quick compared to the last few. While I was working on CCSDS (which is where I have been spending most of my evenings), I came across <a href="https://github.com/lwip-tcpip/lwip" rel="noopener noreferrer">lwIP</a>, the lightweight TCP/IP stack that ends up in a huge amount of embedded and IoT kit.</p>
+
+<p>Nowadays I don't trust anything, so before I run something I give the code a quick pass with my own code auditor. This time it flagged a suspicious commented-out line in the SNMPv3 parser.</p>
+
+<h2 id="how-the-parser-works">How the parser works</h2>
+
+<p>Turning SNMP in lwIP means calling <code>snmp_init()</code> once, which opens a UDP socket on port 161. From then on, every packet to that port goes to <code>snmp_receive()</code> (<code>snmp_msg.c:286</code>):</p>
+
+<pre><code class="language-c">void
+snmp_receive(void *handle, struct pbuf *p, const ip_addr_t *source_ip, u16_t port)
+{
+  err_t err;
+  struct snmp_request request;
+
+  memset(&amp;request, 0, sizeof(request));
+  request.handle       = handle;
+  request.source_ip    = source_ip;
+  request.source_port  = port;
+  request.inbound_pbuf = p;
+
+  snmp_stats.inpkts++;
+
+  err = snmp_parse_inbound_frame(&amp;request);
+</code></pre>
+
+<p><code>request</code> is an ordinary local variable, so it lives on <code>snmp_receive</code>'s stack frame. The function zeroes it, hands it to <code>snmp_parse_inbound_frame()</code>, and everything the parser decodes gets written back into it.</p>
+
+<p>That's what makes a bug here interesting: <code>snmp_receive</code>'s saved return address sits on the same frame as <code>request</code>. So an overflow that runs off the end of a field heads through the rest of the struct and, far enough, into that return address. </p>
+
+<p>Inside <code>snmp_parse_inbound_frame</code>, the part that matters is the SNMPv3 security header. It's the layer that's supposed to authenticate the request. <a href="https://datatracker.ietf.org/doc/html/rfc3414#section-2.4" rel="noopener noreferrer">RFC 3414</a> defines it as six fields in a fixed order, and the parser decodes them in exactly that order (<code>snmp_msg.c:905</code>-<code>963</code>): the engine ID, two counters (boots and time), the user name, the authentication parameters, and the privacy parameters.</p>
+
+<p>The sender controls how long the engine ID, the user name, and the auth and privacy parameters are. On the receiving side, each gets a fixed-size buffer inside <code>struct snmp_request</code>, capped by a constant in <code>snmpv3_priv.h</code>:</p>
+
+<pre><code class="language-c">#define SNMP_V3_MAX_ENGINE_ID_LENGTH  32
+#define SNMP_V3_MAX_USER_LENGTH       32
+
+#define SNMP_V3_MAX_AUTH_PARAM_LENGTH  12
+#define SNMP_V3_MAX_PRIV_PARAM_LENGTH  8
+</code></pre>
+
+<p>Each field is decoded the same way: read its length off the wire, then call <code>snmp_asn1_dec_raw()</code> to copy that many bytes into the field's buffer, bounded by the buffer's size. Here's the user name field, done right, at <code>snmp_msg.c:935</code>:</p>
+
+<pre><code class="language-c">    IF_PARSE_EXEC(snmp_asn1_dec_raw(&amp;pbuf_stream, tlv.value_len, request-&gt;msg_user_name,
+                                    &amp;u16_value, SNMP_V3_MAX_USER_LENGTH));
+</code></pre>
+
+<p><code>tlv.value_len</code> is the length the sender put on the wire. The last argument (<code>SNMP_V3_MAX_USER_LENGTH</code>), as we saw, is the size of the destination. The copy function compares the two and refuses to write more than the destination can hold.</p>
+
+<p>Now the authentication parameters field, a few lines down at <code>snmp_msg.c:949-950</code>:</p>
+
+<pre><code class="language-c">    /* Read auth parameters */
+    /* IF_PARSE_ASSERT(tlv.value_len &lt;= SNMP_V3_MAX_AUTH_PARAM_LENGTH); */
+    IF_PARSE_EXEC(snmp_asn1_dec_raw(&amp;pbuf_stream, tlv.value_len, request-&gt;msg_authentication_parameters,
+                                    &amp;u16_value, tlv.value_len));
+</code></pre>
+
+<p>This is that commented line. The user name field above passed <code>SNMP_V3_MAX_USER_LENGTH</code>, the size of its destination. This call passes <code>tlv.value_len</code>, the same sender-controlled length it already uses as the read length. It was written that way from the start, in 2016. It was safe only because the <code>IF_PARSE_ASSERT</code> on the line above rejected any oversized field before the copy ran. That assert has been commented out, and it was the only check keeping an oversized field out of this 12-byte buffer.</p>
+
+<p>Here's what <code>snmp_asn1_dec_raw</code> does with that:</p>
+
+<pre><code class="language-c">err_t
+snmp_asn1_dec_raw(struct snmp_pbuf_stream *pbuf_stream, u16_t len, u8_t *buf, u16_t *buf_len, u16_t buf_max_len)
+{
+  if (len &gt; buf_max_len) {
+    /* not enough dst space */
+    return ERR_MEM;
+  }
+  *buf_len = len;
+
+  while (len &gt; 0) {
+    PBUF_OP_EXEC(snmp_pbuf_stream_read(pbuf_stream, buf));
+    buf++;
+    len--;
+  }
+
+  return ERR_OK;
+}
+</code></pre>
+
+<p>It checks incoming length against destination size. For the auth field, <code>len</code> and <code>buf_max_len</code> are the same value, so it's checking <code>x &gt; x</code>, which never fires. The function copies the full length into the destination, whatever the destination's real size is.</p>
+
+<p>The very next field, privacy parameters at <code>snmp_msg.c:961</code>, does it correctly:</p>
+
+<pre><code class="language-c">    IF_PARSE_EXEC(snmp_asn1_dec_raw(&amp;pbuf_stream, tlv.value_len, request-&gt;msg_privacy_parameters,
+                                    &amp;u16_value, SNMP_V3_MAX_PRIV_PARAM_LENGTH));
+</code></pre>
+
+<p>The check was there when SNMPv3 was first added in 2016. It was commented out on 2017-03-01, in a commit titled "Added handling invalid packets in SNMPv3".</p>
+
+<h2 id="what-else">What else</h2>
+
+<p>Once the copy runs off the end of the 12-byte auth slot, it walks straight through the fields sitting after it in the struct. A big enough write carries on past the rest of the struct and into the function's saved return address, which on a small embedded target with no stack protection is how an attacker usually takes control. </p>
+
+<p>To see it for real, I fed an oversized authentication-parameters field into lwIP's actual parser (the same <code>snmp_asn1_dec_raw</code> from above, compiled straight from source). It reads the length from the packet and copies that many bytes into the 12-byte buffer, running off the end into <code>msg_privacy_parameters</code> and then <code>context_engine_id</code>:</p>
+
+<p><img src="../assets/images/lwip-parser-overflow.png" alt="lwIP's own parser copying an oversized authentication-parameters field past its 12-byte buffer and into the adjacent fields of struct snmp_request"></p>
+
+<p>That is the out-of-bounds write before any authentication. Whether it reaches the saved return address is target-dependent and a separate step. </p>
+
+<h2 id="impact">Impact</h2>
+
+<p>The 9.3 is the worst case: a pre-auth remote code execution on a target with no stack protection. What I actually proved is the write. I do believe that the real-world reach is narrow, though. SNMP is off by default, and SNMPv3 is a second opt-in on top. Also only SNMPv3 is affected, SNMPv1 and v2c use a different path.</p>
+
+<p>The bad part is that it has been in the code since 2017, about nine years, and shipped in every release from 2.1.0 to 2.2.1. lwIP is also the default TCP/IP stack in a lot of vendor platforms, most notably Espressif's ESP-IDF (via the <a href="https://github.com/espressif/esp-lwip" rel="noopener noreferrer">esp-lwip</a> fork) and STMicroelectronics' STM32Cube, among others.</p>
+
+<p>Till next time 🚀</p>
+
+<h2 id="timeline">Timeline</h2>
+
+<table>
+<thead>
+<tr>
+  <th>Date</th>
+  <th>Event</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>2017-03-01</td>
+  <td>Vulnerability introduced (commit <a href="https://github.com/lwip-tcpip/lwip/commit/f092d091" rel="noopener noreferrer"><code>f092d091</code></a>)</td>
+</tr>
+<tr>
+  <td>2026-03-22</td>
+  <td>Discovery</td>
+</tr>
+<tr>
+  <td>2026-03-22</td>
+  <td>Private disclosure via <a href="https://savannah.nongnu.org/bugs/?68194" rel="noopener noreferrer">Savannah</a></td>
+</tr>
+<tr>
+  <td>2026-05-18</td>
+  <td><a href="https://www.cve.org/CVERecord?id=CVE-2026-8836" rel="noopener noreferrer">CVE-2026-8836</a> assigned</td>
+</tr>
+<tr>
+  <td>2026-05-18</td>
+  <td>Upstream patch commit <a href="https://github.com/lwip-tcpip/lwip/commit/0c957ec03054eb6c8205e9c9d1d05d90ada3898c" rel="noopener noreferrer"><code>0c957ec0</code></a></td>
+</tr>
+</tbody>
+</table>
+
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <span class="footer-text">&copy; 2026 0rbitingZer0</span>
+      <div class="footer-links">
+        <a href="https://github.com/0rbitingZer0" target="_blank" rel="noopener">github</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="../assets/js/prism.min.js"></script>
+  <script src="../assets/js/prism-python.min.js"></script>
+  <script src="../assets/js/prism-bash.min.js"></script>
+  <script src="../assets/js/prism-javascript.min.js"></script>
+  <script src="../assets/js/prism-json.min.js"></script>
+  <script src="../assets/js/prism-c.min.js"></script>
+</body>
+</html>
