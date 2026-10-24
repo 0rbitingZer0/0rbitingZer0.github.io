@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; font-src 'self';">
+  <title>ExoDiff - 0rbitingZer0</title>
+  <meta name="description" content="Where does exoplanet data disagree?">
+  <meta property="og:title" content="ExoDiff">
+  <meta property="og:description" content="Where does exoplanet data disagree?">
+  <meta property="og:type" content="article">
+  <link rel="icon" href="../assets/images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../assets/css/style.css">
+  <link rel="stylesheet" href="../assets/css/prism-tomorrow.min.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container">
+      <a href="../index.html" class="site-logo">0rbitingZer0</a>
+      <nav class="site-nav">
+        <a href="../notes/index.html" class="active">notes</a>
+        <a href="../vulnerabilities/index.html">vulns</a>
+        <a href="../about.html">about</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="container">
+      <a href="index.html" class="back-link">notes</a>
+      <div class="article-header">
+        <h1>ExoDiff</h1>
+        <p class="meta" style="font-style: italic; margin-top: 0.3rem;">Where does exoplanet data disagree?</p>
+        <div class="meta">2026-10-24</div>
+        
+      </div>
+      <div class="article-content">
+        <p>I've been wanting to spend more time working with space data, pipelines and everything related for a little while now. Exoplanets seemed like a good excuse to do that, especially considering the amount of public data available.</p>
+
+<p>While learning and reading, I eventually ended up building <a href="https://0rbitingzer0.github.io/ExoDiff/" rel="noopener noreferrer">ExoDiff</a>.</p>
+
+<p>It pulls catalogue data from public sources, including published measurements and estimates with references to the papers they came from. It compares related values and flags the places where things don't quite add up. The data come from the NASA Exoplanet Archive, NASA's public Exoplanet Catalog, exoplanet.eu and Gaia DR3, with SIMBAD helping match star names between catalogues.</p>
+
+<p>A daily job checks the sources for changes and refreshes the dataset when needed. If a source is unavailable, the pipeline can fall back to a saved copy.</p>
+
+<p>Different doesn't necessarily mean wrong. Values can come from different papers, use different assumptions or be calculated in different ways. ExoDiff runs checks and tests possible explanations, leaving the cases that may be worth a closer look.</p>
+
+<p>Claude Opus 5.5 helped me build it, but the data processing and comparisons are performed by ordinary code. The checks have limitations, and I'm still refining the methodology as I find things that need fixing.</p>
+
+<p>It's live now. If you work with exoplanet data or astronomical catalogues and spot something I've missed, I'd be very interested in your feedback.</p>
+
+<p>The project is open source, and the code is on <a href="https://github.com/0rbitingZer0/ExoDiff" rel="noopener noreferrer">GitHub</a>.</p>
+
+<p>Till next time 🚀</p>
+
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <span class="footer-text">&copy; 2026 0rbitingZer0</span>
+      <div class="footer-links">
+        <a href="https://github.com/0rbitingZer0" target="_blank" rel="noopener">github</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="../assets/js/prism.min.js"></script>
+  <script src="../assets/js/prism-python.min.js"></script>
+  <script src="../assets/js/prism-bash.min.js"></script>
+  <script src="../assets/js/prism-javascript.min.js"></script>
+  <script src="../assets/js/prism-json.min.js"></script>
+  <script src="../assets/js/prism-c.min.js"></script>
+</body>
+</html>
